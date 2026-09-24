@@ -4,3 +4,4 @@ venv
 wheels
 DASC7606C_cleaned.txt
 .idea/
+__pycache__
