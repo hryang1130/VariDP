@@ -61,7 +61,7 @@
 
 补充：`replay_trajectory` 在 ManiSkill 3.0.1 里已把 `--num-procs` **改名为 `-n/--num-envs`**，老教程里的 `--num-procs` 会直接报错。
 
-> 上表是**本机 Windows** 的约束。学院 GPU（Linux, RTX 4080）的差异见 [`学院_uv安装指南.md`](学院_uv安装指南.md) §6：
+> 上表是**本机 Windows** 的约束。学院 GPU（Linux, RTX 4080）的差异见 [`学院_uv安装指南.md`](学院_uv安装指南.md) 附录 C：
 > pinocchio 轮子自带（不用移植）、`physx_cuda` 并行仿真**可能可用**（评测可 `--num-envs 32`）、无外网时用镜像源装依赖。
 
 **关键环境路径（后面命令都用它）**

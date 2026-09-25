@@ -71,15 +71,15 @@ python train_local/train.py --env-id StackCube-v1 --backbone unet --max-episode-
 python tools/summarize_runs.py --csv
 ```
 
-**学院 GPU 机器（RTX 4080, Linux）**：用 `train/` 目录代替 `train_local/`（环境搭建见
-`学院_uv安装指南.md`）。训练命令一致；评测额外支持并行仿真：
+**学院 GPU 机器（RTX 4080, Linux）**：用 `train/` 目录代替 `train_local/`（环境搭建只有两步：
+装 uv → 在仓库根 `uv sync`，详见 `学院_uv安装指南.md`）。训练命令一致；评测额外支持并行仿真：
 
 ```bash
 cd train
 python train.py --env-id PickCube-v1 --backbone unet   # 默认 --device cuda
 python eval.py  --ckpt runs/PickCube-v1_frac1.0_unet_seed0/best.pt -n 50 --num-envs 32 --sim-backend gpu
 
-# 汇总农场结果（回到仓库根目录）
+# 汇总训练评测结果（回到仓库根目录）
 python tools/summarize_runs.py --runs-dir train/runs --out train/runs/SUMMARY_all.md
 ```
 
