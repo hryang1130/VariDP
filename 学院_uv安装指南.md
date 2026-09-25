@@ -168,17 +168,21 @@ pip freeze > requirements.txt
 ## 4. 把代码和数据传上去
 
 ```bash
-# 在 Windows 上（Git Bash / PowerShell 都行），hostname 换成你登录集群用的地址
+# 在 Windows 上（PowerShell），hostname 换成你登录集群用的地址
 # 只传代码：dp/ tools/ train_local/ train/ pyproject.toml（venv / wheels / runs 都不用传）
-ssh u3684238@gpu-4080-402 "mkdir -p ~/dasc7606c"
-scp -r D:\Code\python\dpl\demo\pythonProject1\dp          u3684238@gpu-4080-402:~/dasc7606c/
-scp -r D:\Code\python\dpl\demo\pythonProject1\tools       u3684238@gpu-4080-402:~/dasc7606c/
-scp -r D:\Code\python\dpl\demo\pythonProject1\train_local u3684238@gpu-4080-402:~/dasc7606c/
-scp -r D:\Code\python\dpl\demo\pythonProject1\train       u3684238@gpu-4080-402:~/dasc7606c/
-scp D:\Code\python\dpl\demo\pythonProject1\pyproject.toml u3684238@gpu-4080-402:~/dasc7606c/
+$proj = "D:\Code\python\dpl\demo\pythonProject1"      # ← 改成你的项目根目录（改了名也没关系）
+$host = "u3684238@gpu-4080-402"
+
+ssh $host "mkdir -p ~/dasc7606c"
+scp -r "$proj\dp"           "$host`:~/dasc7606c/"
+scp -r "$proj\tools"        "$host`:~/dasc7606c/"
+scp -r "$proj\scripts"      "$host`:~/dasc7606c/"
+scp -r "$proj\train_local"  "$host`:~/dasc7606c/"
+scp -r "$proj\train"        "$host`:~/dasc7606c/"
+scp    "$proj\pyproject.toml" "$host`:~/dasc7606c/"
 
 # 演示数据（PickCube 那份 39 MB，几秒钟）
-scp -r C:\Users\kevin\.maniskill\demos\PickCube-v1  u3684238@gpu-4080-402:~/.maniskill/demos/
+scp -r "$env:USERPROFILE\.maniskill\demos\PickCube-v1" "$host`:~/.maniskill/demos/"
 ```
 
 > 以后新增任务数据也一样传到 `~/.maniskill/demos/<Task>-v1/` 下；`dp.dp_lib.find_dataset` 会自动按
@@ -203,7 +207,7 @@ uv run python train/train.py --env-id PickCube-v1 --backbone unet --total-iters 
 ```
 
 第三条是真正的冒烟：能开始训练、loss 在降、结束后 `runs/` 里出现 `loss_curve.png`，环境就通了。
-（脚本会自动把仓库根挂到 `sys.path`，所以即使没 `uv sync` 装包、直接用 `uv run --no-project python train/train.py` 也能跑。）
+（脚本会自动把仓库根挂到 `sys.path`，所以 `dp` 不必 `pip install -e .` 也能 import；但 torch / mani_skill 这些依赖仍要先装好。）
 
 ---
 
@@ -231,6 +235,7 @@ uv run python train/train.py --env-id PickCube-v1 --backbone unet --total-iters 
 | `ModuleNotFoundError: mani_skill` | 没在 `.venv` 里跑 | 用 `uv run python ...`（推荐，自动带环境），或先 `source .venv/bin/activate` |
 | `没找到 xxx 的 state 数据集` | 数据没传 / 路径不对 | 确认 `~/.maniskill/demos/<Task>-v1/**/*.state.pd_ee_delta_pos.physx_cpu.h5` 存在 |
 | 家目录配额爆了 | torch+CUDA 轮子 ~7 GB | `df -h ~` 看配额；`uv cache clean` 清缓存；或把 `.venv` 建在大盘上（`UV_PROJECT_ENVIRONMENT=/path/.venv uv sync`） |
+| 改了项目目录名后 `activate` / pinocchio 报错 | venv 里存了创建时的绝对路径 | 跑 `python tools/fix_venv_paths.py --apply` 一键修（脚本在仓库里，只用标准库） |
 | 训练比本机还慢 | 被分到共享节点 / CPU 核被限 | `nvidia-smi` 确认卡空闲；数据加载用 `--num-workers`（如支持） |
 
 ---

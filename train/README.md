@@ -1,7 +1,7 @@
 # `train/` — 学院 GPU 机器上的训练 / 评测
 
 > 适用环境：学院机器 **单张 RTX 4080 (16 GB) + Linux**。不是集群、没有 DDP——训练就是单进程单卡。
-> 环境搭建见根目录 `GPU农场_uv安装指南.md`（uv 或原生 `python3 -m venv` 均可）。
+> 环境搭建见根目录 `学院_uv安装指南.md`（uv 或原生 `python3 -m venv` 均可）。
 
 ## 目录分工（`dp/` 库 + 两套入口脚本）
 
@@ -27,7 +27,7 @@ python train.py --env-id PickCube-v1 --backbone unet --seed 0
 ```
 
 产物（`train/runs/<env>_frac<f>_<backbone>_seed<s>/`）：
-`best.pt`、`last.pt`、`log.csv`、`loss_curve.png`、`val_curve.png`、`train_summary.json`。
+`best.pt`、`last.pt`、`log.csv`、`loss_curve.png`、`train_summary.json`（与本机 `train_local/runs/` 同格式）。
 
 ## 评测（并行仿真）
 

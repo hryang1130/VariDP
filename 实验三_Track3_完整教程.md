@@ -5,15 +5,18 @@
 
 > ⚠️ **代码真源提示（文档更新：2026-09-25）**
 >
-> 本文写作时项目还没有 `dp/` 库，教程里贴的代码块（`dp_lib.py` / `train_dp.py` / `eval_dp.py` 等）是**当时的历史版本（MLP-only）**，只用来讲原理；**与仓库不一致时一律以仓库代码为准**：
+> 本文已按"不重复仓库代码"精简（**1776 行 → 现在的体量**）：
+> ① `dp_lib.py` / `train_dp.py` / `eval_dp.py` 三个**历史版本（MLP-only）代码块**已删除（仓库里有真源：`dp/` 与 `train_local/`）；
+> ② 文内那些一次性脚本正文**已落成真文件**，放在 `scripts/`（`fetch_demos.py` / `convert_all.py` / `gen_demos_scripted.py` / `check_datasets.py` / `fetch_ms_baseline.py` / `eval_all.py`），本文只留结论与用法。
+> **与仓库不一致时一律以仓库代码为准**；被删内容的原始全文备份在 `.ref/教程_v0_full.md`。
 >
 > | 教程里的代码块 | 现在的真源 |
 > |---|---|
-> | 6.3 的 `dp_lib.py` | `dp/dp_lib.py`（+ `dp/backbones.py` 三种主干 + `dp/utils.py`） |
-> | 7.1 的 `train_dp.py` | `train_local/train.py`（本机）/ `train/train.py`（学院 GPU） |
-> | 8.1 的 `eval_dp.py` | `train_local/eval.py` / `train/eval.py`（后者支持并行仿真） |
-> | 7.2 / 8.2 的批量脚本 | `tools/run_local.py`（一键）/ `tools/summarize_runs.py`（汇总） |
-> | 4 / 5 的演示生成与质检脚本 | 仓库未收录（按教程直接存成脚本用即可） |
+> | ~~6.3 的 `dp_lib.py`~~（已删） | `dp/dp_lib.py`（+ `dp/backbones.py` 三种主干 + `dp/utils.py`） |
+> | ~~7.1 的 `train_dp.py`~~（已删） | `train_local/train.py`（本机）/ `train/train.py`（学院 GPU） |
+> | ~~8.1 的 `eval_dp.py`~~（已删） | `train_local/eval.py` / `train/eval.py`（后者支持并行仿真） |
+> | 7.2 / 8.2 的批量脚本 | `tools/run_local.py`（一键）/ `tools/summarize_runs.py`（汇总）/ `scripts/eval_all.py`（批量评测） |
+> | 4 / 5 / 6.5 的演示生成与质检脚本 | `scripts/`（`fetch_demos.py` / `convert_all.py` / `gen_demos_scripted.py` / `check_datasets.py` / `fetch_ms_baseline.py`） |
 >
 > 主干结构在 2026-09-25 已升级为**官方实现的完整移植**：UNet = `ConditionalUnet1D`（66.418 M），
 > Transformer = `TransformerForDiffusion`（DP-T，8.972 M），MLP 基线不变（0.353 M）。详见 `train_local/README.md` 第 6 节。
@@ -58,19 +61,25 @@
 
 补充：`replay_trajectory` 在 ManiSkill 3.0.1 里已把 `--num-procs` **改名为 `-n/--num-envs`**，老教程里的 `--num-procs` 会直接报错。
 
+> 上表是**本机 Windows** 的约束。学院 GPU（Linux, RTX 4080）的差异见 [`学院_uv安装指南.md`](学院_uv安装指南.md) §6：
+> pinocchio 轮子自带（不用移植）、`physx_cuda` 并行仿真**可能可用**（评测可 `--num-envs 32`）、无外网时用镜像源装依赖。
+
 **关键环境路径（后面命令都用它）**
 
 ```text
-项目根目录   D:\Code\python\dpl\demo\pythonProject1
-Python       D:\Code\python\dpl\demo\pythonProject1\venv\Scripts\python.exe
-演示数据根   C:\Users\kevin\.maniskill\demos        （即 mani_skill.DEMO_DIR）
+项目根目录   <项目根目录>                              （本仓库所在文件夹，放哪都行）
+Python       <项目根目录>\venv\Scripts\python.exe      （本机 venv；Linux 上用 .venv/bin/python）
+演示数据根   %USERPROFILE%\.maniskill\demos            （即 mani_skill.DEMO_DIR，在项目目录之外）
 ```
 
-为方便，先设一个快捷：
+为方便，在**项目根目录下**先设一个快捷（CMD；PowerShell 写 `$PY = ".\venv\Scripts\python.exe"`）：
 
-```bash
-set PY=D:\Code\python\dpl\demo\pythonProject1\venv\Scripts\python.exe
+```bat
+set PY=%CD%\venv\Scripts\python.exe
 ```
+
+> 🔁 **改过项目目录名 / 搬过家**：跑一次 `python tools\fix_venv_paths.py --apply`（修 venv 里写死的绝对路径，见
+> `train_local/README.md` §11），再在 PyCharm 里重新指定一次解释器即可。
 
 ---
 
@@ -116,7 +125,7 @@ ManiSkill 3.0.1 中 **panda 机械臂 + 有官方演示** 的任务共 16 个。
 | 5 | `PegInsertionSide-v1` ⚠️ | 紧公差侧向插入 | peg 插入孔中（难度高，适合做失败分析） |
 | 6 | `PlugCharger-v1` ⚠️ | 插接（紧配合） | charger 插入 receptacle |
 
-> ⚠️ 带标记的两个任务**需要旋转末端**，`pd_ee_delta_pos`（4 维）做不到：请改用 **`pd_ee_delta_pose`（7 维：位置+旋转）**——官方 `baselines.sh` 里 `PegInsertionSide-v1` 用的就是它，转换演示时也要相应写 `-c pd_ee_delta_pose`。
+> ⚠️ 带标记的两个任务**需要旋转末端**，`pd_ee_delta_pos`（4 维）做不到：请改用 **`pd_ee_delta_pose`（7 维：位置+旋转）**——官方 `baselines.sh` 里 `PegInsertionSide-v1` 用的就是它（数据与训练都按 7 维处理）。
 
 **可替换/加练**：`PullCubeTool-v1`（工具使用）、`LiftPegUpright-v1`（姿态翻转）、`PlaceSphere-v1`（放入容器）、`StackPyramid-v1`（多层堆叠）。有官方运动规划演示的完整清单：
 
@@ -145,441 +154,28 @@ max_episode_steps = 按官方 baselines.sh：100 / 100 / 200 / 300（见第 6.5 
 
 ## 4. 第 2 步：生成专家演示
 
-课程允许 `teleoperation, motion planning, scripted controllers, or another justified method`。**推荐双路线并用**，报告里写成一条完整 pipeline，这样既稳又能拿满“演示生成”分：
+课程允许 `teleoperation, motion planning, scripted controllers, or another justified method`。本仓库提供两条路线的现成脚本：
 
-- **路线 A（主力，覆盖 6 个任务）**：下载官方运动规划演示 → **自己写脚本重放转换**成目标观测/动作空间 → 质量筛选。
-- **路线 B（加分项，覆盖 2~3 个任务）**：**自己写脚本控制器**从零生成演示（不依赖 mplib），这是最硬的“自己生成”证据。
-
-### 4.1 路线 A：下载 + 重放转换
-
-#### (1) 下载（必须走 hf-mirror 镜像）
-
-官方 `mani_skill.utils.download_demo` 内部用 urllib 直连 `huggingface.co`，在本机会 502。建一个 `fetch_demos.py`：
-
-```python
-# fetch_demos.py — 从 hf-mirror 镜像下载官方演示并解包到 ~/.maniskill/demos
-import io, os, sys, zipfile, urllib.request
-from mani_skill import DEMO_DIR
-
-BASE = "https://hf-mirror.com/datasets/haosulab/ManiSkill_Demonstrations/resolve/main/demos"
-HDR = {"User-Agent": "Mozilla/5.0"}   # 关键：hf-mirror 不带 UA 会返回 403
-
-
-def fetch(env_id: str, out_dir: str = None):
-    out_dir = out_dir or DEMO_DIR
-    os.makedirs(out_dir, exist_ok=True)
-    url = f"{BASE}/{env_id}.zip?download=true"
-    print("GET", url, flush=True)
-    req = urllib.request.Request(url, headers=HDR)
-    data = urllib.request.urlopen(req, timeout=1800).read()
-    z = zipfile.ZipFile(io.BytesIO(data))
-    z.extractall(out_dir)          # zip 内部已含 <env_id>/ 前缀
-    print(f"{env_id}: {len(data)/1e6:.1f} MB 已解包到 {out_dir}", flush=True)
-
-
-if __name__ == "__main__":
-    ids = sys.argv[1:] or ["PickCube-v1"]
-    for eid in ids:
-        fetch(eid)
-```
-
-用法：
-
-```bash
-%PY% fetch_demos.py PickCube-v1 StackCube-v1 PushCube-v1 PullCube-v1 PegInsertionSide-v1 PlugCharger-v1
-```
-
-解包后目录结构（已核实）：
-
-```
-~/.maniskill/demos/<Task>-v1/
-├── motionplanning/
-│   ├── trajectory.h5        ← 原始演示：obs_mode=none, control_mode=pd_joint_pos
-│   ├── trajectory.json      ← episode 元数据（seed / elapsed_steps / success）
-│   └── sample.mp4           ← 官方录制的样例视频（可直接用作报告的“演示生成过程”素材）
-└── rl/                      ← 强化学习演示（可选，作为数据增补或对比）
-    ├── trajectory.none.pd_ee_delta_pos.physx_cuda.h5
-    ├── trajectory.none.pd_ee_delta_pose.physx_cuda.h5
-    ├── trajectory.none.pd_joint_delta_pos.physx_cuda.h5
-    └── ppo_*.pt             ← 预训练策略权重
-```
-
-> ⚠️ **`sample.mp4` 的存在说明你现有那份 `PickCube-v1/motionplanning/trajectory.h5` 是从这个 zip 解出来的**（官方 mp 脚本只会生成 `trajectory.mp4`，不会生成 `sample.mp4`）。所以报告里千万不要把它写成“我们自己用运动规划生成的”——评分表明确不认纯下载。
-
-#### (2) 重放转换（把 `pd_joint_pos` 演示转成 `pd_ee_delta_pos` + `state` 观测）
-
-```bash
-%PY% -m mani_skill.trajectory.replay_trajectory ^
-  --traj-path "%USERPROFILE%\.maniskill\demos\PickCube-v1\motionplanning\trajectory.h5" ^
-  --use-first-env-state ^
-  -c pd_ee_delta_pos ^
-  -o state ^
-  --save-traj ^
-  -n 4 ^
-  -b cpu
-```
-
-参数说明（**关键差异**）：
-
-| 参数 | 含义 |
-|---|---|
-| `--traj-path` | 原始 `.h5` 绝对路径（`.json` 会自动一起找） |
-| `--use-first-env-state` | 用轨迹里第一条 env state 作为初始状态，保证可复现 |
-| `-c` | 目标控制模式；`pd_joint_pos → pd_ee_delta_pos` 靠 **pinocchio 正运动学**换算 |
-| `-o` | 目标观测模式；`state` = 扁平 42 维向量 |
-| `--save-traj` | 落盘 |
-| `-n` | **并行环境/进程数**（旧版叫 `--num-procs`，3.0.1 已改名） |
-| `-b cpu` | CPU 后端（控制模式转换不支持 GPU 并行环境） |
-
-**输出**：同目录下 `trajectory.state.pd_ee_delta_pos.physx_cpu.h5`（+ `.json`）。命名规则固定为
-
-```
-<traj_name>.<obs_mode>.<control_mode>.physx_<backend>.h5
-```
-
-**有用的可选参数**（做质量筛选时很实用）：
-
-- `--max-retry N`：一条轨迹重试 N 次直到成功
-- `--allow-failure`：**默认**已丢弃失败轨迹；加这个才会把失败轨迹也存下来
-- `--discard-timeout`：丢掉被 `max_episode_steps` 截断的 episode
-- `--count N`：只重放前 N 条
-
-**批量脚本 `convert_all.py`**：
-
-```python
-# convert_all.py — 批量重放转换
-import os.path as osp, subprocess, sys
-from mani_skill import DEMO_DIR
-
-TASKS = ["PickCube-v1", "StackCube-v1", "PushCube-v1",
-         "PullCube-v1", "PegInsertionSide-v1", "PlugCharger-v1"]
-N_ENVS = "4"
-
-for t in TASKS:
-    src = osp.join(str(DEMO_DIR), t, "motionplanning", "trajectory.h5")
-    if not osp.exists(src):
-        print(f"[skip] {t}: 缺 {src}")
-        continue
-    cmd = [sys.executable, "-m", "mani_skill.trajectory.replay_trajectory",
-           "--traj-path", src, "--use-first-env-state",
-           "-c", "pd_ee_delta_pos", "-o", "state",
-           "--save-traj", "-n", N_ENVS, "-b", "cpu"]
-    print("[run]", " ".join(cmd), flush=True)
-    subprocess.run(cmd, check=False)
-```
-
-```bash
-%PY% convert_all.py
-```
-
-> **两个已知小毛病（不影响结果）**：
-> 1. 转换进程退出时可能返回非 0，并且残留 4 个分片文件 `trajectory.state.pd_ee_delta_pos.physx_cpu.{0,1,2,3}.h5/.json`（各约 10 MB）。原因是主进程 `os.remove` 分片时被本机的安全删除拦截。**主文件已经合并好了，可以手动删掉那 8 个分片文件**。
-> 2. 用户目录里那份 `PickCube-v1/motionplanning/trajectory.state.pd_ee_delta_pos.physx_cpu.0~3.h5` 就是这么来的，可以直接清理。
-
-### 4.2 路线 B：自己写脚本控制器（推荐至少做 2~3 个任务）
-
-因为 mplib 装不上，我们自己用「特权状态 + 末端点到点控制器」生成演示。这属于课程明确允许的 *scripted controllers*，**且是最强的“自己生成”证据**。
-
-#### (1) 先搞清 `pd_ee_delta_pos` 的真实语义（已实测）
-
-```
-动作 a ∈ [-1, 1]^4
-a[0:3] : 机器人【基座坐标系】下的位移增量；归一化尺度 POS_SCALE = 0.1 m
-         （即 a=1.0 → 期望位移 +0.1 m，实际因 IK+PD 大约 0.017 m/step）
-a[3]   : 夹爪，+1 张开 / -1 闭合
-末端姿态保持不变（无旋转自由度）→ 只能做“位置 + 开合”类任务
-```
-
-实测数据（PickCube-v1，seed=0）：
-
-```
-机器人根节点  p = [-0.615, 0, 0]      ← 注意！不在世界原点
-初始 TCP      p = [ 0.012, 0.038, 0.182]
-方块          p = [-0.001, 0.054, 0.020]
-goal_site     p = [ 0.027, -0.002, 0.289]
-```
-
-#### (2) 完整生成脚本 `gen_demos_scripted.py`
-
-```python
-# gen_demos_scripted.py — 不依赖 mplib 的自建脚本控制器演示生成
-from __future__ import annotations
-import argparse, os, os.path as osp, time
-import numpy as np
-import gymnasium as gym
-
-import mani_skill.envs  # noqa: F401  必须导入才会注册环境
-from mani_skill import DEMO_DIR
-from mani_skill.utils.wrappers.record import RecordEpisode
-
-POS_SCALE = 0.1        # 归一化动作 1.0 == 0.1 m
-OPEN, CLOSE = 1.0, -1.0
-MAX_EPISODE_STEPS = 300   # 默认 50 太短，必须放宽
-
-
-# ---------- 四元数工具（纯 numpy，避免依赖 Pose API 细节） ----------
-def quat_conj(q):
-    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float64)
-
-
-def quat_rotate(q, v):
-    """用 wxyz 四元数旋转向量 v"""
-    w, x, y, z = q
-    qv = np.array([x, y, z], dtype=np.float64)
-    return v + 2.0 * w * np.cross(qv, v) + 2.0 * np.cross(qv, np.cross(qv, v))
-
-
-class ScriptedController:
-    """pd_ee_delta_pos 动作空间下的末端点到点控制器"""
-
-    def __init__(self, env, kp=2.0):
-        self.env = env
-        self.u = env.unwrapped
-        self.agent = self.u.agent
-        self.kp = kp
-        self.n_steps = 0
-
-    # ---- 坐标 ----
-    def root_pose(self):
-        pose = self.agent.robot.pose
-        p = pose.p[0].detach().cpu().numpy().astype(np.float64)
-        q = pose.q[0].detach().cpu().numpy().astype(np.float64)
-        return p, q
-
-    def world_to_base(self, p_world):
-        rp, rq = self.root_pose()
-        return quat_rotate(quat_conj(rq), np.asarray(p_world, dtype=np.float64) - rp)
-
-    def tcp_world(self):
-        return self.agent.tcp.pose.p[0].detach().cpu().numpy().astype(np.float64)
-
-    def tcp_base(self):
-        return self.world_to_base(self.tcp_world())
-
-    def obj_world(self, attr):
-        return getattr(self.u, attr).pose.p[0].detach().cpu().numpy().astype(np.float64)
-
-    # ---- 动作 ----
-    def action_to(self, target_world, gripper):
-        d = self.world_to_base(target_world) - self.tcp_base()
-        a = np.clip(self.kp * d / POS_SCALE, -1.0, 1.0)
-        return np.array([a[0], a[1], a[2], gripper], dtype=np.float32)
-
-    def _step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        self.n_steps += 1
-        return info, bool(np.asarray(terminated).any()), bool(np.asarray(truncated).any())
-
-    def goto(self, target_world, gripper, tol=0.01, max_steps=60):
-        """闭环移动到目标点，误差 < tol 认为到位"""
-        for _ in range(max_steps):
-            _, term, trunc = self._step(self.action_to(target_world, gripper))
-            if term or trunc:
-                return False
-            if np.linalg.norm(self.world_to_base(target_world) - self.tcp_base()) < tol:
-                return True
-        return False
-
-    def hold(self, target_world, gripper, n=18):
-        """保持目标点不动，持续施加夹爪指令"""
-        for _ in range(n):
-            _, term, trunc = self._step(self.action_to(target_world, gripper))
-            if term or trunc:
-                return False
-        return True
-
-    # ---- 收尾 ----
-    def success(self):
-        return bool(np.asarray(self.u.evaluate()["success"]).any())
-
-    def settle(self, gripper, n=60, check_every=2):
-        """原地不动（目标点=当前 TCP），等待 is_robot_static 之类的判据满足"""
-        for i in range(n):
-            _, term, trunc = self._step(self.action_to(self.tcp_world(), gripper))
-            if term or trunc:
-                break
-            if i % check_every == 0 and self.success():
-                return True
-        return self.success()
-
-    def servo(self, make_target, gripper, n=150):
-        """闭环伺服：每步用 make_target() 重算目标，一旦判成功立即停"""
-        for _ in range(n):
-            _, term, trunc = self._step(self.action_to(make_target(), gripper))
-            if term or trunc:
-                break
-            if self.success():
-                return True
-        return self.success()
-```
-
-#### (3) 各任务的动作程序（waypoint program）
-
-> ⚠️ **最容易踩的坑**：`PickCube-v1` 的成功判据是 `is_obj_placed AND is_robot_static`，而 `goal_site` 在方块上方 **0~0.3 m 的空中**。所以必须**握着方块停住**，绝不能松手“放下”——松手方块会掉到桌面，永远不满足条件。
-
-```python
-def prog_pick_cube(ctl):
-    """抓取并稳定举在 goal_site 处（不松手）"""
-    cube = ctl.obj_world("cube")
-    goal = ctl.obj_world("goal_site")
-    ctl.goto(cube + np.array([0, 0, 0.08]), OPEN, tol=0.012, max_steps=40)
-    ctl.goto(cube + np.array([0, 0, 0.005]), OPEN, tol=0.005, max_steps=40)
-    ctl.hold(cube + np.array([0, 0, 0.005]), CLOSE, n=18)
-    ctl.goto(cube + np.array([0, 0, 0.10]), CLOSE, tol=0.012, max_steps=30)
-    ctl.goto(goal, CLOSE, tol=0.008, max_steps=60)
-    return ctl.settle(CLOSE, n=60)
-
-
-def prog_push_cube(ctl):
-    """绕到背面，把方块推（非抓取）进 goal_region"""
-    cube = ctl.obj_world("obj")
-    goal = ctl.obj_world("goal_region")
-    d = goal[:2] - cube[:2]
-    n = np.linalg.norm(d)
-    if n < 1e-6:
-        return False
-    d = d / n
-    behind = np.array([cube[0] - d[0] * 0.10, cube[1] - d[1] * 0.10, cube[2]])
-
-    ctl.goto(behind + np.array([0, 0, 0.06]), OPEN, tol=0.012, max_steps=40)
-    ctl.goto(behind, OPEN, tol=0.008, max_steps=30)
-    ctl.goto(np.array([cube[0] - d[0] * 0.03, cube[1] - d[1] * 0.03, cube[2]]),
-             CLOSE, tol=0.006, max_steps=20)
-
-    def tgt():                       # 始终保持在方块"背面 3.5 cm"，边推边纠偏
-        c = ctl.obj_world("obj")
-        v = goal[:2] - c[:2]
-        v = v / max(np.linalg.norm(v), 1e-6)
-        return np.array([c[0] - v[0] * 0.035, c[1] - v[1] * 0.035, c[2]])
-
-    return ctl.servo(tgt, CLOSE, n=150)
-
-
-def prog_stack_cube(ctl):
-    """把 cubeA 抓起来叠到 cubeB 上（松手 + 撤回 + 静止）"""
-    a = ctl.obj_world("cubeA")
-    b = ctl.obj_world("cubeB")
-    ctl.goto(a + np.array([0, 0, 0.08]), OPEN, tol=0.012, max_steps=40)
-    ctl.goto(a + np.array([0, 0, 0.005]), OPEN, tol=0.005, max_steps=40)
-    ctl.hold(a + np.array([0, 0, 0.005]), CLOSE, n=18)
-    ctl.goto(a + np.array([0, 0, 0.12]), CLOSE, tol=0.012, max_steps=30)
-
-    place = np.array([b[0], b[1], b[2] + 0.045])   # 方块半边长 0.02，略高一点释放
-    ctl.goto(place + np.array([0, 0, 0.10]), CLOSE, tol=0.015, max_steps=45)
-    ctl.goto(place, CLOSE, tol=0.005, max_steps=30)
-    ctl.hold(place, OPEN, n=18)
-    ctl.goto(place + np.array([0, 0, 0.12]), OPEN, tol=0.02, max_steps=30)
-    return ctl.settle(OPEN, n=40)
-
-
-def prog_pull_cube(ctl):
-    """抓住方块后拖进 goal_region"""
-    cube = ctl.obj_world("obj")
-    goal = ctl.obj_world("goal_region")
-    ctl.goto(cube + np.array([0, 0, 0.08]), OPEN, tol=0.012, max_steps=40)
-    ctl.goto(cube + np.array([0, 0, 0.005]), OPEN, tol=0.005, max_steps=40)
-    ctl.hold(cube + np.array([0, 0, 0.005]), CLOSE, n=18)
-    ctl.goto(cube + np.array([0, 0, 0.06]), CLOSE, tol=0.012, max_steps=30)
-
-    def tgt():
-        c = ctl.obj_world("obj")
-        v = goal[:2] - c[:2]
-        v = v / max(np.linalg.norm(v), 1e-6)
-        return np.array([c[0] + v[0] * 0.06, c[1] + v[1] * 0.06, c[2] + 0.04])
-
-    return ctl.servo(tgt, CLOSE, n=150)
-
-
-PROGRAMS = {
-    "PickCube-v1": prog_pick_cube,
-    "PushCube-v1": prog_push_cube,
-    "StackCube-v1": prog_stack_cube,
-    "PullCube-v1": prog_pull_cube,
-}
-```
-
-各任务可用的对象属性（已核实，写新程序时直接查这张表）：
-
-| 任务 | 可用的 `env.unwrapped.<attr>` |
-|---|---|
-| `PickCube-v1` | `cube`, `goal_site`, `cube_half_size`, `goal_thresh` |
-| `PushCube-v1` | `obj`, `goal_region`, `goal_radius`, `cube_half_size` |
-| `StackCube-v1` | `cubeA`, `cubeB`, `cube_half_size` |
-| `PullCube-v1` | `obj`, `goal_region`, `goal_radius` |
-| `PullCubeTool-v1` | `cube`, `cube_half_size`, `cube_size` |
-| `PlaceSphere-v1` | `obj` |
-| `PegInsertionSide-v1` | `peg`, `goal_pose`, `peg_half_sizes`, `peg_head_pose` |
-| `PlugCharger-v1` | `charger`, `receptacle`, `goal_pose` |
-| `LiftPegUpright-v1` | `peg`, `peg_half_length`, `peg_half_width` |
-| `StackPyramid-v1` | `cubeA`, `cubeB`, `cubeC` |
-
-> `PegInsertionSide-v1` / `PlugCharger-v1` / `LiftPegUpright-v1` 需要**旋转末端**，`pd_ee_delta_pos` 做不到 → 这三个任务用 **路线 A**（下载 + 转换）覆盖，或改用 `pd_ee_delta_pose`（7 维动作）。
-
-#### (4) 生成主循环
-
-```python
-def make_env(env_id, obs_mode, control_mode, backend, record_dir, traj_name):
-    env = gym.make(env_id, obs_mode=obs_mode, control_mode=control_mode,
-                   sim_backend=backend, render_mode=None,
-                   max_episode_steps=MAX_EPISODE_STEPS)   # 关键！
-    env = RecordEpisode(env, output_dir=record_dir, trajectory_name=traj_name,
-                        save_video=False,                 # 本机无 Vulkan，必须关
-                        source_type="scripted",
-                        source_desc="self-written scripted waypoint controller (no mplib)",
-                        record_reward=False, save_on_reset=False)
-    return env
-
-
-def run(env_id, n_traj, seed0, out_dir, traj_name="trajectory"):
-    env = make_env(env_id, "state", "pd_ee_delta_pos", "cpu", out_dir, traj_name)
-    h5_path = env._h5_file.filename
-    prog, ctl = PROGRAMS[env_id], None
-    seed, n_ok, n_try = seed0, 0, 0
-    ctl = ScriptedController(env)
-    t0 = time.time()
-    while n_ok < n_traj:
-        env.reset(seed=seed)
-        ctl.n_steps = 0
-        try:
-            prog(ctl)
-        except Exception as e:
-            print(f"[warn] seed={seed}: {type(e).__name__}: {e}", flush=True)
-        success = bool(np.asarray(env.unwrapped.evaluate()["success"]).any())
-        env.flush_trajectory(save=success)      # 只保留成功轨迹
-        n_try += 1
-        n_ok += int(success)
-        print(f"[{env_id}] try={n_try} ok={n_ok} seed={seed} "
-              f"steps={ctl.n_steps} success={success} ({time.time()-t0:.1f}s)", flush=True)
-        seed += 1
-        if n_try > n_traj * 30:
-            print("连续失败过多，提前结束", flush=True)
-            break
-    env.close()
-    return h5_path, n_ok, n_try
-```
-
-输出目录：`~/.maniskill/demos/<Task>-v1/scripted/trajectory.h5`（命名与官方一致，**不需要再做重放转换**，因为我们直接就是 `state` + `pd_ee_delta_pos`）。
-
-**用法**
-
-```bash
-%PY% gen_demos_scripted.py --env-id PickCube-v1  -n 200
-%PY% gen_demos_scripted.py --env-id PushCube-v1  -n 200
-%PY% gen_demos_scripted.py --env-id StackCube-v1 -n 200
-```
-
-#### (5) 调参心得
-
-| 症状 | 原因 | 对策 |
+| 路线 | 脚本 | 说明 |
 |---|---|---|
-| 完全不动 | 忘了做 world→base 变换 | 一定要用 `world_to_base()` |
-| 抓不住 | 抓取高度不对 | 抓取目标 = `立方体中心 + [0,0,0.005]`（TCP 在方块中心，两指自然夹住两侧） |
-| 抓住后滑落 | 夹爪没合够 | `hold(..., CLOSE, n=18)`，不要少于 15 步 |
-| 举到目标但判定失败 | 松手了 / 手臂还在动 | 用 `settle()` 原地保持最多 60 步，等 `is_robot_static` 满足 |
-| 推动时推歪 / 推过头 | 目标点写死 | 用 `servo()` 每步重算“方块背面 3.5 cm”的目标 |
-| episode 被截断 | `max_episode_steps` 默认 50 | 显式传 300 |
+| A（覆盖 6 个任务） | `scripts/fetch_demos.py` → `scripts/convert_all.py` | 从 hf-mirror 下官方演示，再重放转换成 `state` + `pd_ee_delta_pos/pose` |
+| B（"自己生成"证据） | `scripts/gen_demos_scripted.py` | 自写端点闭环控制器 + waypoint 程序，从零生成演示（不依赖 mplib） |
 
----
+```bat
+:: 路线 A（需要联网）
+python scripts\fetch_demos.py PickCube-v1 StackCube-v1
+python scripts\convert_all.py --tasks PickCube-v1 StackCube-v1
+
+:: 路线 B（自己生成，本机就能跑）
+python scripts\gen_demos_scripted.py --env-id PickCube-v1 -n 200
+```
+
+| 项 | 结论 |
+|---|---|
+| 数据位置 | `~/.maniskill/demos/<Task>-v1/motionplanning/trajectory.state.pd_ee_delta_pos.physx_cpu.h5` |
+| 已有数据 | **PickCube-v1（1000 条成功轨迹）**，本项目的训练与评测都用它 |
+| 其他任务 | 需要时再补；课程允许 `teleoperation / motion planning / scripted controllers / another justified method` 任一方式 |
+| 交付口径 | 报告里写明演示来源与筛选标准（质检要点见 §5.4） |
 
 ## 5. 第 3 步：数据集格式与质量检查
 
@@ -616,64 +212,13 @@ trajectory.state.pd_ee_delta_pos.physx_cpu.json   ← 元数据
 
 拼接顺序 = `dict(agent=..., extra=...)` 的插入顺序（`flatten_state_dict` 不排序）。
 
-### 5.3 质量检查脚本 `check_datasets.py`
+### 5.3 数据集质检（脚本已删除，留要点）
 
-```python
-# check_datasets.py — 扫描所有任务的数据集，输出质检报告 (report.md + report.csv)
-import json, csv, glob, os.path as osp
-import numpy as np, h5py
-from mani_skill import DEMO_DIR
-
-ROWS = []
-
-
-def check(h5_path):
-    with h5py.File(h5_path, "r") as f:
-        keys = sorted(f.keys(), key=lambda k: int(k.split("_")[-1]))
-        lengths, succ, gaps, a_lo, a_hi = [], [], [], [], []
-        obs_dim, act_dim = None, None
-        for k in keys:
-            g = f[k]
-            a = g["actions"][:]
-            o = g["obs"][:]
-            obs_dim, act_dim = o.shape[-1], a.shape[-1]
-            lengths.append(len(a))
-            succ.append(bool(g["success"][-1]) if g["success"].shape else False)
-            if len(a) > 1:
-                gaps.append(float(np.abs(np.diff(a, axis=0)).mean()))
-            a_lo.append(a.min(0)); a_hi.append(a.max(0))
-        a_lo, a_hi = np.stack(a_lo).min(0), np.stack(a_hi).max(0)
-        meta = json.load(open(h5_path.replace(".h5", ".json"), encoding="utf-8"))
-        ei = meta["env_info"]
-    return dict(
-        file=osp.basename(h5_path), env_id=ei["env_id"],
-        control_mode=ei["env_kwargs"].get("control_mode"),
-        obs_mode=ei["env_kwargs"].get("obs_mode"),
-        n_episodes=len(keys), obs_dim=obs_dim, act_dim=act_dim,
-        success_rate=float(np.mean(succ)),
-        len_mean=float(np.mean(lengths)), len_min=int(np.min(lengths)), len_max=int(np.max(lengths)),
-        action_smoothness=float(np.mean(gaps)) if gaps else float("nan"),
-        act_min=float(a_lo.min()), act_max=float(a_hi.max()),
-        size_mb=round(osp.getsize(h5_path) / 1e6, 1),
-    )
-
-
-for p in glob.glob(osp.join(str(DEMO_DIR), "*", "*", "*.state.pd_ee_delta_pos.physx_cpu.h5")):
-    ROWS.append(check(p))
-
-ROWS.sort(key=lambda r: r["env_id"])
-cols = list(ROWS[0].keys()) if ROWS else []
-with open("report.csv", "w", newline="", encoding="utf-8") as fp:
-    w = csv.DictWriter(fp, fieldnames=cols); w.writeheader(); w.writerows(ROWS)
-
-with open("report.md", "w", encoding="utf-8") as fp:
-    fp.write("| " + " | ".join(cols) + " |\n")
-    fp.write("|" + "---|" * len(cols) + "\n")
-    for r in ROWS:
-        fp.write("| " + " | ".join(str(r[c]) for c in cols) + " |\n")
-
-print(f"扫描到 {len(ROWS)} 个数据集，已写出 report.md / report.csv")
+```bat
+python scripts\check_datasets.py            :: 默认扫 4 维与 7 维数据集，报告写到 train_local\runs\_reports\
 ```
+
+报告需要的质检结论与自查图见 §5.4。
 
 ### 5.4 质检要看什么（报告里必须有）
 
@@ -711,7 +256,7 @@ plt.tight_layout(); plt.savefig("traj_overview.png", dpi=130)
 
 ### 6.1 为什么用 state-based（MLP）版本
 
-> 📌 **先看第 6.5 节**：ManiSkill 官方有一份可直接使用的 DP 基线（含 `ConditionalUnet1D`），建议用它做 6 任务基线；本节这套自研 MLP-DP 更适合作为「改进 DP」研究问题的可控实验平台。两套都保留最划算。
+> 📌 **先看第 6.5 节**：ManiSkill 官方有一份可直接使用的 DP 基线（含 `ConditionalUnet1D`）；本项目当前**只维护自研实现**（更适合做「改进 DP」研究问题的可控实验平台），官方基线需要时再单独取。
 
 - 官方 DP 仓库提供了 `ConditionalUnet1D`（图像）和低维 state 变体。我们的观测是 **42 维 state**（不是图像），用 **MLP + 条件注入** 就是 DP 论文里对应的 state 版本，**改动量小、训得快（4060 Ti 上单任务几分钟）**，而且更容易做消融。
 - 图像版 DP 需要相机 + 渲染，而**本机没有 Vulkan**，走不通。
@@ -730,180 +275,19 @@ plt.tight_layout(); plt.savefig("traj_overview.png", dpi=130)
 | Batch | — | 256 | |
 | Epoch | — | 300 | 早停看验证集损失 |
 
-### 6.3 模型 + 数据集代码 `dp_lib.py`
+### 6.3 模型 + 数据集代码（真源 `dp/dp_lib.py`）
 
-> 📌 **本节代码是历史版本（MLP-only），用于讲解原理**。现行实现见 `dp/dp_lib.py`（模型/数据集/加噪/采样）
-> 与 `dp/backbones.py`（MLP / 官方 UNet / 官方 Transformer 三种主干）；接口差异见附录 A.5。
+> 📌 **本节原来内嵌整套 MLP-only 代码（约 175 行），已删除** —— 仓库里有更新更准的真源：
+> `dp/dp_lib.py`（模型 / 数据集 / 加噪 / 采样）+ `dp/backbones.py`（三种主干）+ `dp/utils.py`。
+> 下面是接口速查，需要细节直接看真源：
 
-```python
-# dp_lib.py — 极简 Diffusion Policy（state 观测 / MLP 版）
-from __future__ import annotations
-import math
-import h5py
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset
-
-
-# ---------------- 噪声调度：squaredcos_cap_v2（DP 默认） ----------------
-def cosine_beta_schedule(num_timesteps: int, s: float = 0.008) -> torch.Tensor:
-    steps = num_timesteps + 1
-    x = torch.linspace(0, num_timesteps, steps, dtype=torch.float64)
-    ac = torch.cos(((x / num_timesteps) + s) / (1 + s) * math.pi * 0.5) ** 2
-    ac = ac / ac[0]
-    betas = 1.0 - (ac[1:] / ac[:-1])
-    return torch.clip(betas, 1e-4, 0.999).float()
-
-
-class SinusoidalPosEmb(nn.Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, t: torch.Tensor) -> torch.Tensor:
-        half = self.dim // 2
-        freqs = torch.exp(-math.log(10000.0) *
-                          torch.arange(half, device=t.device) / max(half - 1, 1))
-        args = t.float()[:, None] * freqs[None]
-        return torch.cat([args.sin(), args.cos()], dim=-1)
-
-
-class MLP(nn.Module):
-    def __init__(self, dims, act=nn.Mish):
-        super().__init__()
-        layers = []
-        for i in range(len(dims) - 1):
-            layers.append(nn.Linear(dims[i], dims[i + 1]))
-            if i < len(dims) - 2:
-                layers += [act(), nn.LayerNorm(dims[i + 1])]
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.net(x)
-
-
-class DiffusionPolicy(nn.Module):
-    """To 帧 state 观测 → Tp 步动作块（DDPM 训练 / DDIM 推理）"""
-
-    def __init__(self, obs_dim, act_dim, obs_horizon=2, pred_horizon=16,
-                 action_horizon=8, num_train_timesteps=100,
-                 obs_feat_dim=256, hidden=256, n_layers=3):
-        super().__init__()
-        assert action_horizon <= pred_horizon
-        self.obs_dim, self.act_dim = obs_dim, act_dim
-        self.obs_horizon, self.pred_horizon = obs_horizon, pred_horizon
-        self.action_horizon = action_horizon
-        self.num_train_timesteps = num_train_timesteps
-
-        self.obs_encoder = MLP([obs_dim * obs_horizon, obs_feat_dim, obs_feat_dim])
-        self.t_emb = SinusoidalPosEmb(128)
-        dims = [pred_horizon * act_dim + 128 + obs_feat_dim] + [hidden] * n_layers + [pred_horizon * act_dim]
-        self.noise_pred = MLP(dims)
-
-        betas = cosine_beta_schedule(num_train_timesteps)
-        alphas = 1.0 - betas
-        self.register_buffer("betas", betas)
-        self.register_buffer("alphas", alphas)
-        self.register_buffer("ac", torch.cumprod(alphas, dim=0))
-
-    # ---- 条件特征 ----
-    def cond(self, obs_seq):                       # (B, To, obs_dim)
-        return self.obs_encoder(obs_seq.reshape(obs_seq.shape[0], -1))
-
-    def eps(self, x, t, c):
-        B = x.shape[0]
-        inp = torch.cat([x.reshape(B, -1), self.t_emb(t), c], dim=-1)
-        return self.noise_pred(inp).reshape(B, self.pred_horizon, self.act_dim)
-
-    # ---- 训练损失：预测噪声 ----
-    def compute_loss(self, obs_seq, act_seq):
-        B = act_seq.shape[0]
-        c = self.cond(obs_seq)
-        t = torch.randint(0, self.num_train_timesteps, (B,), device=act_seq.device)
-        noise = torch.randn_like(act_seq)
-        ac = self.ac[t].reshape(B, 1, 1)
-        xt = ac.sqrt() * act_seq + (1 - ac).sqrt() * noise
-        return F.mse_loss(self.eps(xt, t, c), noise)
-
-    # ---- DDIM 采样 ----
-    @torch.no_grad()
-    def sample(self, obs_seq, num_inference_timesteps=10):
-        c = self.cond(obs_seq)
-        B = c.shape[0]
-        x = torch.randn(B, self.pred_horizon, self.act_dim, device=c.device)
-        ts = torch.linspace(self.num_train_timesteps - 1, 0,
-                            num_inference_timesteps, dtype=torch.long, device=c.device)
-        for i, t in enumerate(ts):
-            e = self.eps(x, t.expand(B), c)
-            ac_t = self.ac[t].reshape(1, 1, 1)
-            x0 = ((x - (1 - ac_t).sqrt() * e) / ac_t.sqrt()).clamp(-1, 1)
-            if i + 1 < len(ts):
-                ac_p = self.ac[ts[i + 1]].reshape(1, 1, 1)
-                x = ac_p.sqrt() * x0 + (1 - ac_p).sqrt() * e
-            else:
-                x = x0
-        return x
-
-
-# ---------------- 数据集 ----------------
-class DPDataset(Dataset):
-    """按 episode 切窗；两头用「重复边界帧」补齐（DP 官方做法）
-
-    obs_seq[t] = obs[t-To+1 : t+1]      （左侧不足 → 重复第 0 帧）
-    act_seq[t] = action[t : t+Tp]        （右侧不足 → 重复最后一帧）
-    """
-
-    def __init__(self, h5_path, To=2, Tp=16, stats=None, eps_ids=None):
-        self.To, self.Tp = To, Tp
-        self.obs, self.act = [], []
-        with h5py.File(h5_path, "r") as f:
-            keys = sorted(f.keys(), key=lambda k: int(k.split("_")[-1]))
-            if eps_ids is not None:
-                keys = [keys[i] for i in eps_ids]
-            for k in keys:
-                g = f[k]
-                a = g["actions"][:].astype(np.float32)
-                o = g["obs"][:].astype(np.float32)[:len(a)]     # 丢掉多出来的最后一帧
-                self.act.append(a)
-                self.obs.append(o)
-
-        if stats is None:
-            O = np.concatenate(self.obs, 0)
-            A = np.concatenate(self.act, 0)
-            std = O.std(0)
-            std = np.where(std < 1e-3, 1.0, std)     # 低方差维度不做缩放，避免除 0 爆炸
-            stats = dict(obs_mean=O.mean(0).astype(np.float32), obs_std=std.astype(np.float32),
-                         act_min=A.min(0).astype(np.float32), act_max=A.max(0).astype(np.float32))
-        self.stats = stats
-
-        self.index = [(i, t) for i, a in enumerate(self.act) for t in range(len(a))]
-
-    def __len__(self):
-        return len(self.index)
-
-    # ---- 归一化 ----
-    def norm_obs(self, o):
-        return np.clip((o - self.stats["obs_mean"]) / self.stats["obs_std"], -10, 10)
-
-    def norm_act(self, a):
-        lo, hi = self.stats["act_min"], self.stats["act_max"]
-        return 2 * (a - lo) / np.maximum(hi - lo, 1e-6) - 1
-
-    def unnorm_act(self, a):
-        lo, hi = self.stats["act_min"], self.stats["act_max"]
-        return (a + 1) / 2 * (hi - lo) + lo
-
-    def __getitem__(self, idx):
-        i, t = self.index[idx]
-        o, a = self.obs[i], self.act[i]
-        L = len(a)
-        o_ids = [max(0, t - j) for j in range(self.To - 1, -1, -1)]
-        a_ids = [min(L - 1, t + j) for j in range(self.Tp)]
-        return (torch.from_numpy(self.norm_obs(o[o_ids])),
-                torch.from_numpy(self.norm_act(a[a_ids])))
-```
+| 接口 | 说明 |
+|---|---|
+| `cosine_beta_schedule(T)` | squaredcos_cap_v2 噪声调度（DP 默认） |
+| `SinusoidalPosEmb(dim)` | 时间步 sin/cos 嵌入 |
+| `DPDataset(trajs, stats, To, Tp)` | 按 episode 切窗、两端重复边界帧补齐、观测 z-score / 动作 min-max 归一化 |
+| `DiffusionPolicy(obs_dim, act_dim, backbone=...)` | `compute_loss(obs_seq, act_seq)`（ε-prediction MSE）、`sample(obs_seq, K)`（DDIM） |
+| `load_trajectories` / `compute_stats` / `split_episodes` / `find_dataset` | 读 h5、统计量、按 episode 划分、自动定位数据集 |
 
 ### 6.4 预处理要点
 
@@ -912,141 +296,30 @@ class DPDataset(Dataset):
 3. **统计量只在训练集上算**，然后存进 checkpoint 给评测用 —— 这是防止信息泄漏的硬要求，报告里必须写。
 4. **按 episode 划分 train/val**（比如 9:1），**绝不按单步随机划分**（同一 episode 的相邻帧高度相关，按步划分会严重高估验证效果）。
 
-### 6.5 【推荐】直接用 ManiSkill 官方 DP 基线
+### 6.5 官方 DP 基线：与本项目实现的分工
 
-#### (1) 先说清楚：为什么会有"不能用官方的 DP"这个误解
+> 📌 官方基线代码在 GitHub，`pip install mani_skill` **不含** `examples/baselines/`（见 §0 约束 7）。
+> 需要时用 `python scripts\fetch_ms_baseline.py`（走 jsdelivr / gh-proxy 镜像）抓到 `third_party/ms_dp_baseline/`，
+> 它自带 `train.py` 与 `baselines.sh`；本项目自己的实现则始终在 `dp/` + `train_local/`。
 
-ManiSkill 官方**确实有**一份 DP 基线（`examples/baselines/diffusion_policy/`，改写自 Columbia 的原始 DP 仓库），而且它的示例命令用的正是你手上那个文件：
-
-```bash
---demo-path ~/.maniskill/demos/PickCube-v1/motionplanning/trajectory.state.pd_ee_delta_pos.physx_cpu.h5
-```
-
-但实际有三个原因让它"看起来用不了"：
-
-| 阻塞点 | 实情 | 能不能解 |
+| 用途 | 用哪套 | 理由 |
 |---|---|---|
-| **代码不在 pip 包里** | `pip install mani_skill` 只装 `mani_skill/` 库；`examples/` 下只有 `benchmarking`/`motionplanning`/`teleoperation`，**没有 `baselines/`**。DP 基线在 GitHub 仓库里 | ✅ 从镜像站取单文件 |
-| **GitHub 不通** | `github.com` 和 `raw.githubusercontent.com` 都是 SSL handshake timeout。你项目根那个 `ManiSkill/.git`（26 MB、无分支、HEAD 无法解析、无工作树）就是 clone 中断的残骸 | ✅ 用 `cdn.jsdelivr.net` / `gh-proxy.com` |
-| **依赖缺 2 个** | `diffusers` ✅ / `tensorboard` ❌ / `wandb` ❌ | ✅ `pip install tensorboard`，wandb 用 `--no-track` 关掉 |
+| 6 个任务的 DP 基线（评分项 2，20 分） | 需要时另取官方基线 | 权威、超参已调好（`baselines.sh`），报告里写"复现官方 baseline"更稳 |
+| **"Improving DP" 研究问题（评分项 3，20 分）** | **本项目实现 `dp/dp_lib.py` + `dp/backbones.py`** | 代码在自己手里才能改主干 / 视野 / 采样步数做消融 |
 
-> ⚠️ 还有一个**认知层面**的原因：官方 DP 基线解决的是「**训练 + 评测**」，它**不解决「演示数据从哪来」**。你在实验三里真正卡住的地方是 **mplib 装不上 → 不能本地跑运动规划生成演示**（约束 #1），换成官方 DP 完全一样卡在这一步。所以换 DP 实现 ≠ 解决你的主要问题。
+> ⚠️ 两者是不同实现，报告里别把自研版当官方基线来报。
 
-#### (2) 取代码（已验证可用的两条通道）
-
-```text
-列目录  https://gh-proxy.com/https://api.github.com/repos/haosulab/ManiSkill/contents/<path>?ref=main
-取文件A https://cdn.jsdelivr.net/gh/haosulab/ManiSkill@main/<path>                ← 最快
-取文件B https://gh-proxy.com/https://raw.githubusercontent.com/haosulab/ManiSkill/main/<path>
-```
-
-需要抓的文件共 **9 个**：
-
-```text
-examples/baselines/diffusion_policy/
-├── setup.py                      414 B
-├── README.md                    3.9 KB
-├── baselines.sh                 4.0 KB   ← 官方调好的 6 任务超参，必看
-├── train.py                    19.8 KB   ← state 观测训练入口
-├── train_rgbd.py               26.3 KB   （只用 state 的话可以不要）
-└── diffusion_policy/
-    ├── conditional_unet1d.py    9.0 KB
-    ├── evaluate.py              1.7 KB
-    ├── make_env.py              3.6 KB
-    ├── plain_conv.py            2.1 KB
-    └── utils.py                 7.5 KB
-```
-
-抓取脚本 `fetch_ms_baseline.py`：
-
-```python
-# fetch_ms_baseline.py — 经镜像站抓取 ManiSkill 官方 DP 基线（绕过 github 不通）
-import os, os.path as osp, urllib.request
-
-MIRRORS = [
-    "https://cdn.jsdelivr.net/gh/haosulab/ManiSkill@main/",
-    "https://gh-proxy.com/https://raw.githubusercontent.com/haosulab/ManiSkill/main/",
-]
-PREFIX = "examples/baselines/diffusion_policy"
-FILES = [
-    "setup.py", "README.md", "baselines.sh", "train.py", "train_rgbd.py",
-    "diffusion_policy/conditional_unet1d.py", "diffusion_policy/evaluate.py",
-    "diffusion_policy/make_env.py", "diffusion_policy/plain_conv.py",
-    "diffusion_policy/utils.py",
-]
-OUT = "third_party/ms_dp_baseline"
-
-HDR = {"User-Agent": "Mozilla/5.0"}
-
-
-def grab(rel, dst):
-    last = None
-    for m in MIRRORS:
-        try:
-            req = urllib.request.Request(m + f"{PREFIX}/{rel}", headers=HDR)
-            data = urllib.request.urlopen(req, timeout=120).read()
-            os.makedirs(osp.dirname(dst), exist_ok=True)
-            open(dst, "wb").write(data)
-            print(f"  ok  {rel}  ({len(data)} B)")
-            return
-        except Exception as e:
-            last = e
-    raise RuntimeError(f"{rel} 全部镜像失败: {last}")
-
-
-for f in FILES:
-    grab(f, osp.join(OUT, f))
-# 包内需要 __init__.py
-open(osp.join(OUT, "diffusion_policy", "__init__.py"), "a").close()
-print(f"\n完成 → {osp.abspath(OUT)}")
-```
-
-```bash
-%PY% fetch_ms_baseline.py
-%PY% -m pip install tensorboard          # wandb 可选，用 --no-track 绕开
-```
-
-#### (3) 官方调好的超参（直接抄 `baselines.sh`，别自己猜）
+**官方 `baselines.sh` 的超参**（本项目自研实现沿用同一套 `control_mode` / `max_episode_steps`，便于对比）：
 
 | 任务 | `--control-mode` | `--max-episode-steps` | `--total-iters` |
 |---|---|---|---|
 | `PickCube-v1` | `pd_ee_delta_pos` | 100 | 30000 |
 | `PushCube-v1` | `pd_ee_delta_pos` | 100 | 30000 |
 | `StackCube-v1` | `pd_ee_delta_pos` | 200 | 30000 |
-| `PegInsertionSide-v1` | **`pd_ee_delta_pose`** | 300 | 100000 |
-| `PushT-v1` | **`pd_ee_delta_pose`** | 150（`--num_eval_envs 100`，`--act_horizon 1`）| 50000 |
+| `PegInsertionSide-v1` | **`pd_ee_delta_pose`**（7 维，插 peg 必须能转末端） | 300 | 100000 |
+| `PushT-v1` | **`pd_ee_delta_pose`** | 150（`--num_eval_envs 100`，`--act_horizon 1`） | 50000 |
 
-> ⚠️ **两个重要修正**：
-> 1. `PegInsertionSide-v1` 官方用的是 **`pd_ee_delta_pose`（7 维：位置+旋转）**，不是 `pd_ee_delta_pos`。因为插 peg 必须旋转末端。→ 它的演示要转成 `-c pd_ee_delta_pose`。
-> 2. `--max-episode-steps` **必须按上表给**。官方 README 原话：建议设成**平均演示长度的 2 倍**，否则"策略学不会在于演示同样时间内完成任务"。这跟我实测的默认 50 步截断是同一个坑。
-
-#### (4) 训练命令
-
-```bash
-cd third_party/ms_dp_baseline
-set seed=1
-set demos=100
-
-%PY% train.py --env-id PickCube-v1 ^
-  --demo-path "%USERPROFILE%\.maniskill\demos\PickCube-v1\motionplanning\trajectory.state.pd_ee_delta_pos.physx_cpu.h5" ^
-  --control-mode "pd_ee_delta_pos" --sim-backend "physx_cpu" ^
-  --num-demos %demos% --max_episode_steps 100 --total_iters 30000 ^
-  --exp-name dp-PickCube-state-%demos%-seed%seed% ^
-  --no-track
-```
-
-（Windows 下把 `baselines.sh` 的 `\` 续行改成 `^`，`$demos` 改成 `%demos%`。）
-
-#### (5) 策略建议：官方 baseline + 自研实现 = 直接把"深入研究"那 20 分吃到
-
-| 用途 | 用哪套 | 理由 |
-|---|---|---|
-| **6 个任务的 DP 基线**（评分项 2，20 分） | **官方 DP**（`train.py`） | 权威、可引用、超参已调好、报告里写"复现官方 baseline"很稳 |
-| **"Improving DP" 研究问题**（评分项 3，20 分） | **本教程第 6.3 节的自研 MLP-DP** | 自己写才能自由改观测编码器 / 视野 / 采样步数，做消融 |
-
-这样两边都不浪费：官方实现保证基线可信，自研实现保证你有"可控变量"能做实验。**报告里一定要写明两者是不同实现，不能把自研版当官方基线来报。**
-
----
+> `max_episode_steps` 必须按上表给（官方建议取平均演示长度的 2 倍），否则策略没时间在演示同长的时间里完成任务。
 
 ## 7. 第 5 步：逐任务训练
 
@@ -1055,7 +328,7 @@ set demos=100
 > pythonProject1/
 > ├── dp/                      可复用库（两台机器共用同一份）
 > │   ├── backbones.py         三种主干：MLP / 官方 UNet / 官方 Transformer(DP-T)
-> │   ├── dp_lib.py            模型 + 数据集（下 7.1 的代码就是它）
+> │   ├── dp_lib.py            模型 + 数据集（真源，§6.3 只留接口速查）
 > │   └── utils.py             EMA / loss 曲线
 > ├── tools/
 > │   ├── run_local.py         一键：数据检查 → 训练 → 评测 → 出 SUMMARY
@@ -1065,135 +338,27 @@ set demos=100
 > ```
 > 在仓库根目录跑：`python tools/run_local.py --env-id PickCube-v1 --backbone unet`
 
-### 7.1 训练脚本 `train_dp.py`
+### 7.1 训练脚本（真源 `train_local/train.py`）
 
-```python
-# train_dp.py — 单任务训练 DP
-import argparse, json, os, os.path as osp, time
-import numpy as np
-import torch
-from torch.utils.data import DataLoader, Subset
+> 📌 **本节原来内嵌整套训练脚本（约 120 行），已删除** —— 真源是 `train_local/train.py`（本机）
+> 与 `train/train.py`（学院 GPU），两者训练循环与产物格式一致。参数表见 `train_local/README.md` 第 2 节，关键点：
 
-from dp_lib import DiffusionPolicy, DPDataset
-from mani_skill import DEMO_DIR
-
-
-class EMA:
-    def __init__(self, model, decay=0.995):
-        import copy
-        self.decay = decay
-        self.ema = copy.deepcopy(model).eval()
-        for p in self.ema.parameters():
-            p.requires_grad_(False)
-
-    @torch.no_grad()
-    def update(self, model):
-        for pe, pm in zip(self.ema.parameters(), model.parameters()):
-            pe.mul_(self.decay).add_(pm.detach(), alpha=1 - self.decay)
-        for be, bm in zip(self.ema.buffers(), model.buffers()):
-            be.copy_(bm)
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--env-id", required=True)
-    ap.add_argument("--h5", default=None, help="默认自动在 demos/<env>/ 下找最新的 state h5")
-    ap.add_argument("--out", default="runs")
-    ap.add_argument("--epochs", type=int, default=300)
-    ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=1e-4)
-    ap.add_argument("--wd", type=float, default=1e-6)
-    ap.add_argument("--demo-frac", type=float, default=1.0, help="用多少比例的演示（数据效率实验用）")
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--device", default="cuda")
-    args = ap.parse_args()
-    torch.manual_seed(args.seed); np.random.seed(args.seed)
-
-    h5 = args.h5
-    if h5 is None:
-        import glob
-        cands = (glob.glob(osp.join(str(DEMO_DIR), args.env_id, "*", "*.state.pd_ee_delta_pos.physx_cpu.h5")))
-        assert cands, f"没找到 {args.env_id} 的 state 数据集"
-        h5 = max(cands, key=osp.getmtime)
-
-    To, Tp, Ta = 2, 16, 8
-    full = DPDataset(h5, To=To, Tp=Tp)
-    n_eps = len(full.obs)
-
-    # 按 episode 划分 + 数据效率子采样
-    rng = np.random.default_rng(args.seed)
-    perm = rng.permutation(n_eps)
-    n_use = max(1, int(round(n_eps * args.demo_frac)))
-    train_eps = set(perm[:n_use].tolist())
-    val_eps = set(perm[n_use:].tolist()) or set(perm[-max(1, n_eps // 10):].tolist())
-
-    train_ds = DPDataset(h5, To=To, Tp=Tp, stats=full.stats, eps_ids=sorted(train_eps))
-    val_ds = DPDataset(h5, To=To, Tp=Tp, stats=full.stats, eps_ids=sorted(val_eps))
-    print(f"[{args.env_id}] 演示 {n_eps} 条 | 训练 {len(train_eps)} 条/{len(train_ds)} 步 "
-          f"| 验证 {len(val_eps)} 条/{len(val_ds)} 步")
-
-    tl = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=0, drop_last=True)
-    vl = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=0)
-
-    model = DiffusionPolicy(obs_dim=full.obs[0].shape[-1], act_dim=full.act[0].shape[-1],
-                            obs_horizon=To, pred_horizon=Tp, action_horizon=Ta).to(args.device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
-    ema = EMA(model, 0.995)
-
-    out_dir = osp.join(args.out, f"{args.env_id}_frac{args.demo_frac}_seed{args.seed}")
-    os.makedirs(out_dir, exist_ok=True)
-    best = 1e9
-    t0 = time.time()
-
-    for ep in range(1, args.epochs + 1):
-        model.train(); tr = 0.0
-        for obs_seq, act_seq in tl:
-            obs_seq, act_seq = obs_seq.to(args.device), act_seq.to(args.device)
-            loss = model.compute_loss(obs_seq, act_seq)
-            opt.zero_grad(set_to_none=True); loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step(); ema.update(model)
-            tr += loss.item() * obs_seq.shape[0]
-        sched.step()
-        tr /= max(1, len(train_ds))
-
-        if ep % 10 == 0 or ep == args.epochs:
-            model.eval(); va = 0.0
-            with torch.no_grad():
-                for obs_seq, act_seq in vl:
-                    obs_seq, act_seq = obs_seq.to(args.device), act_seq.to(args.device)
-                    va += model.compute_loss(obs_seq, act_seq).item() * obs_seq.shape[0]
-            va /= max(1, len(val_ds))
-            print(f"[{args.env_id}] ep {ep:4d}/{args.epochs} train {tr:.5f} val {va:.5f} "
-                  f"({time.time()-t0:.0f}s)", flush=True)
-            ck = dict(config=dict(env_id=args.env_id, h5=h5, demo_frac=args.demo_frac,
-                                  seed=args.seed, max_episode_steps=300,
-                                  num_inference_timesteps=10,
-                                  model_kwargs=dict(obs_dim=full.obs[0].shape[-1],
-                                                    act_dim=full.act[0].shape[-1],
-                                                    obs_horizon=To, pred_horizon=Tp,
-                                                    action_horizon=Ta)),
-                      stats={k: v.tolist() for k, v in full.stats.items()},
-                      model_state_dict=model.state_dict(),
-                      ema_state_dict=ema.ema.state_dict(),
-                      val_loss=va, epoch=ep)
-            torch.save(ck, osp.join(out_dir, "last.pt"))
-            if va < best:
-                best = va
-                torch.save(ck, osp.join(out_dir, "best.pt"))
-    print(f"完成 {args.env_id}: best val {best:.5f} → {out_dir}/best.pt")
-
-
-if __name__ == "__main__":
-    main()
-```
+| 要点 | 说明 |
+|---|---|
+| 数据划分 | **按 episode** 划分 train/val（绝不按单步随机切，否则验证集泄漏） |
+| 迭代换算 | `--total-iters`（默认 30000，对齐官方 baseline）自动换成 epoch；也可 `--epochs` 直接指定 |
+| 数据效率 | `--demo-frac` 从训练集里再裁一部分演示 |
+| EMA | 固定 decay 0.995（`dp/utils.py`），评测默认用 EMA 权重 |
+| 产物 | `best.pt` / `last.pt` / `log.csv` / `loss_curve.png` / `train_summary.json` |
+| 冒烟 | `python train_local/train.py --env-id PickCube-v1 --epochs 2` |
 
 ### 7.2 一键训练 6 个任务
 
 ```bash
-for %T in (PickCube-v1 StackCube-v1 PushCube-v1 PullCube-v1 PegInsertionSide-v1 PlugCharger-v1) do ^
-  %PY% train_dp.py --env-id %T --epochs 300
+# PowerShell（每任务一轮；换主干时加 --backbone unet / transformer）
+foreach ($T in "PickCube-v1","StackCube-v1","PushCube-v1","PullCube-v1","PegInsertionSide-v1","PlugCharger-v1") {
+  python train_local/train.py --env-id $T --epochs 300
+}
 ```
 
 ### 7.3 分两阶段跑：本地 4060 先通一个任务，再上集群
@@ -1215,36 +380,20 @@ for %T in (PickCube-v1 StackCube-v1 PushCube-v1 PullCube-v1 PegInsertionSide-v1 
 
 #### (2) 阶段 1：本地跑通 PickCube-v1
 
-用官方 DP 基线：
-
 ```bash
-cd third_party/ms_dp_baseline
-set demos=100
-
-%PY% train.py --env-id PickCube-v1 ^
-  --demo-path "%USERPROFILE%\.maniskill\demos\PickCube-v1\motionplanning\trajectory.state.pd_ee_delta_pos.physx_cpu.h5" ^
-  --control-mode "pd_ee_delta_pos" --sim-backend "physx_cpu" ^
-  --num-demos %demos% --max_episode_steps 100 --total_iters 30000 ^
-  --num_eval_envs 1 --no_capture_video --no-track ^
-  --exp-name dp-PickCube-state-%demos%-seed1
+python train_local/train.py --env-id PickCube-v1 --epochs 300 --device cuda
+python train_local/eval.py  --ckpt train_local/runs/<刚训好的实验目录>/best.pt -n 50 --seed0 2000
 ```
 
-用本教程的自研实现：
-
-```bash
-%PY% train_dp.py --env-id PickCube-v1 --epochs 300 --device cuda
-%PY% eval_dp.py  --ckpt runs\PickCube-v1_frac1.0_seed0\best.pt -n 50 --seed0 2000
-```
-
-**显存**：state 版 DP 只有几百万参数，batch 256 + 42 维观测 → 通常 **< 2 GB**，8 GB 显存绰绰有余。
+**显存**：三个主干在 batch 256 下的峰值显存实测 ≤ 2.2 GB（最大是 66.4 M 的 UNet），8 GB 绰绰有余。
 
 **怎么判断跑通了**：
 
 | 观察项 | 期望 |
 |---|---|
 | 训练 loss | 从 ~1 降到 < 0.01（30000 iter 内） |
-| 评测成功率 | PickCube 官方 baseline 大约 **80~100%**；低于 50% 先查 `max_episode_steps` 和演示长度 |
-| 单 epoch 时间 | 4060 Ti 上通常几秒 |
+| 评测成功率 | PickCube 本机 MLP 基线实测 **96%（48/50）**；低于 50% 先查 `max_episode_steps` 与演示长度 |
+| 单 epoch 时间 | 4060 Ti：MLP 几秒；UNet/Transformer 约 5~8× 慢（见 A.3.2） |
 
 **第一个任务建议就用 `PickCube-v1`**：动作空间最简单（4 维）、演示已经现成（1000 条）、官方有调好的超参，跑通它只为了**打通整条链路**（数据 → 训练 → 评测 → 出数字）。
 
@@ -1262,7 +411,7 @@ set demos=100
 **要带走的东西（清单）**：
 
 1. 数据集：`~/.maniskill/demos/<Task>-v1/motionplanning/*.state.pd_ee_delta_pos.physx_cpu.h5`（**h5 跨平台，直接拷贝即可，不用重新生成**）
-2. 代码：`fetch_demos.py` / `convert_all.py` / `gen_demos_scripted.py` / `check_datasets.py` / `dp_lib.py` / `train_dp.py` / `eval_dp.py` / `fetch_ms_baseline.py` / `third_party/ms_dp_baseline/`
+2. 代码：仓库整体（`dp/` + `tools/` + `train_local/` + `train/` + `pyproject.toml`），见根 `README.md`
 3. 版本锁（本地实测组合）：
 
 ```text
@@ -1273,8 +422,7 @@ torchaudio    2.11.0+cu126
 mani_skill    3.0.1
 sapien        3.0.3
 gymnasium / h5py / numpy / matplotlib
-diffusers / tensorboard          # 官方 DP baseline 需要
-mplib（仅 Linux）                 # 运动规划生成演示
+# 可选：diffusers / tensorboard（用官方 DP 基线时才需要）；mplib（仅 Linux，用运动规划生成演示时才需要）
 ```
 
 4. **种子清单**：训练 seeds、评测 seeds（2000~2049）、数据划分 seed 全部写进一个 `SEEDS.md`，本地与集群保持一致。
@@ -1287,119 +435,37 @@ mplib（仅 Linux）                 # 运动规划生成演示
 |---|---|
 | GPU（本地） | NVIDIA GeForce RTX 4060 Ti，**8.0 GB**，34 SM，cc 8.9，驱动 561.09 |
 | PyTorch | 2.14.0+cu126（CUDA 12.6），`torch.cuda.is_available() = True` |
-| 单任务训练时间 | 约 3~10 分钟（300 epoch / 30000 iter，取决于演示条数） |
-| 训练显存占用 | < 2 GB（state 版 DP 只有几百万参数） |
+| 单任务训练时间 | 30k iters 实测：MLP ~5 min、Transformer ~27 min、UNet ~40 min（见 A.3.2） |
+| 训练显存占用 | batch 256 峰值 ≤ 2.2 GB（UNet 66.4 M 最大；MLP/Transformer 更小） |
 | 评测（本地 CPU 单环境） | CPU 仿真约 60~140 步/秒；50 episode × 100 步 ≈ 40~80 秒 |
 | 评测（集群 GPU 并行） | `physx_cuda` 可开 ~100 并行环境，一轮评测几十秒 |
-| 演示生成 | 脚本控制器约 15~40 条/分钟（受 IK/PD 收敛速度限制） |限制） |
+| 演示生成 | 脚本控制器约 15~40 条/分钟（受 IK/PD 收敛速度限制；本项目的 PickCube 数据已生成好） |
 
 ---
 
 ## 8. 第 6 步：评测（held-out seeds）
 
-### 8.1 评测脚本 `eval_dp.py`
+### 8.1 评测脚本（真源 `train_local/eval.py`）
 
-```python
-# eval_dp.py — 在 held-out 初始条件上评测训练好的 DP
-import argparse, json, os.path as osp
-import numpy as np
-import torch
-import gymnasium as gym
+> 📌 **本节原来内嵌整套评测脚本（约 80 行），已删除** —— 真源是 `train_local/eval.py`（本机，`physx_cpu` 单环境）
+> 与 `train/eval.py`（学院 GPU，支持 `--num-envs` 并行仿真）。关键点：
 
-import mani_skill.envs  # noqa: F401
-from dp_lib import DiffusionPolicy
-
-
-def load_policy(ckpt_path, device):
-    ck = torch.load(ckpt_path, map_location=device, weights_only=False)
-    cfg = ck["config"]
-    pol = DiffusionPolicy(**cfg["model_kwargs"]).to(device).eval()
-    pol.load_state_dict(ck["ema_state_dict"])     # 评测用 EMA 权重
-    st = {k: np.asarray(v, dtype=np.float32) for k, v in ck["stats"].items()}
-    return pol, cfg, st
-
-
-@torch.no_grad()
-def evaluate(ckpt_path, n_episodes=50, seed0=2000, device="cuda", verbose=True):
-    pol, cfg, st = load_policy(ckpt_path, device)
-    env_id = cfg["env_id"]
-    To, Tp, Ta = (cfg["model_kwargs"]["obs_horizon"],
-                  cfg["model_kwargs"]["pred_horizon"],
-                  cfg["model_kwargs"]["action_horizon"])
-    n_steps = cfg["max_episode_steps"]
-    n_inf = cfg["num_inference_timesteps"]
-
-    env = gym.make(env_id, obs_mode="state", control_mode="pd_ee_delta_pos",
-                   sim_backend="cpu", render_mode=None,
-                   max_episode_steps=n_steps)     # 必须显式传，默认 50 太短！
-
-    results, n_ok = [], 0
-    for ep in range(n_episodes):
-        seed = seed0 + ep
-        obs, info = env.reset(seed=seed)
-        o = np.asarray(obs["state"] if isinstance(obs, dict) else obs,
-                       dtype=np.float32).reshape(-1)
-        hist = [o.copy() for _ in range(To)]
-        chunk, t, k, success = None, 0, 0, False
-        while t < n_steps:
-            if k % Ta == 0:     # 每 Ta 步重新预测一个动作块（receding horizon）
-                oseq = np.stack(hist[-To:], 0)
-                oseq = np.clip((oseq - st["obs_mean"]) / st["obs_std"], -10, 10)
-                a_norm = pol.sample(torch.from_numpy(oseq)[None].to(device), n_inf)[0].cpu().numpy()
-                chunk = (a_norm + 1) / 2 * (st["act_max"] - st["act_min"]) + st["act_min"]
-            a = np.clip(chunk[k % Ta], -1, 1).astype(np.float32)
-            obs, r, term, trunc, info = env.step(a)
-            o = np.asarray(obs["state"] if isinstance(obs, dict) else obs,
-                           dtype=np.float32).reshape(-1)
-            hist.append(o.copy()); t += 1; k += 1
-            if bool(np.asarray(info.get("success", [False])).any()):
-                success = True
-            if bool(np.asarray(term).any()) or bool(np.asarray(trunc).any()):
-                break
-        n_ok += int(success)
-        results.append(dict(seed=seed, success=success, steps=t))
-        if verbose:
-            print(f"  ep {ep+1:3d}/{n_episodes} seed={seed} success={success} steps={t}",
-                  flush=True)
-    env.close()
-    return n_ok / n_episodes, results
-
-
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", required=True)
-    ap.add_argument("-n", "--episodes", type=int, default=50)
-    ap.add_argument("--seed0", type=int, default=2000)
-    ap.add_argument("--out", default=None)
-    a = ap.parse_args()
-    sr, res = evaluate(a.ckpt, a.episodes, a.seed0)
-    print(f"\n成功率 = {sr*100:.1f}%  ({sum(r['success'] for r in res)}/{len(res)})")
-    if a.out:
-        json.dump(dict(success_rate=sr, results=res), open(a.out, "w"), indent=2)
-```
+| 要点 | 说明 |
+|---|---|
+| 观测历史 | 维护最近 `To` 帧（首帧重复补齐），与训练切窗一致 |
+| 动作执行 | receding horizon：每 `Ta` 步重规划一次，块内其余步直接复用 |
+| 反归一化 | 观测用训练集统计量 z-score，动作反归一化回真实尺度 |
+| 失败分类 | 自动区分「超时」（跑满 `max_episode_steps`）与「提前终止」（`terminated`） |
+| 输出 | `eval_seed<seed0>_n<N>.json`：逐 episode 的 seed / success / steps |
 
 ### 8.2 批量评测并汇总成表
 
-```python
-# eval_all.py
-import glob, json, os.path as osp
-from eval_dp import evaluate
-
-rows = []
-for ck in sorted(glob.glob("runs/*_frac1.0_seed0/best.pt")):
-    sr, res = evaluate(ck, n_episodes=50, seed0=2000, verbose=False)
-    env_id = ck.split("\\")[-2].rsplit("_", 2)[0]
-    rows.append(dict(env_id=env_id, success_rate=round(sr, 4),
-                     n_ok=sum(r["success"] for r in res), n_ep=len(res),
-                     avg_steps=round(sum(r["steps"] for r in res) / len(res), 1)))
-    print(rows[-1], flush=True)
-
-json.dump(rows, open("eval_summary.json", "w"), indent=2)
-print("\n| Task | Success | n/N | avg steps |")
-print("|---|---|---|---|")
-for r in rows:
-    print(f"| {r['env_id']} | {r['success_rate']*100:.1f}% | {r['n_ok']}/{r['n_ep']} | {r['avg_steps']} |")
+```bat
+python scripts\eval_all.py                          :: 扫 train_local\runs\*\best.pt，逐个调 eval.py
+python tools\summarize_runs.py --runs-dir train_local\runs --csv   :: 汇总成 5 节报告
 ```
+
+`summarize_runs.py` 会自动出 5 节（总览 / 按任务对比 / 评测明细 / 训练配置 / 完整性提示），可直接贴进报告。
 
 ### 8.3 评测的铁律（评分表里 25 分就在这）
 
@@ -1427,8 +493,10 @@ for r in rows:
 | 评测 | 50 ep，seeds 2000–2049（固定） | 同 | 同 | 同 |
 
 ```bash
-for %F in (1.0 0.5 0.25 0.1) do ^
-  %PY% train_dp.py --env-id PickCube-v1 --demo-frac %F --seed 0 --epochs 300
+# 四档数据量（分档跑），或直接：python tools/run_local.py --env-id PickCube-v1 --backbone unet --data-efficiency
+foreach ($F in 1.0, 0.5, 0.25, 0.1) {
+  python train_local/train.py --env-id PickCube-v1 --backbone unet --demo-frac $F --seed 0 --epochs 300
+}
 ```
 
 在 **2~3 个任务**上做（如 PickCube + StackCube + PushCube），画 `成功率 vs 演示条数` 曲线并标出标准差带。
@@ -1464,10 +532,6 @@ for %F in (1.0 0.5 0.25 0.1) do ^
 
 ```
 project/
-├── fetch_demos.py            下载官方演示（hf-mirror）
-├── convert_all.py            批量重放转换
-├── gen_demos_scripted.py     自建脚本控制器生成演示   ← “自己生成”证据
-├── check_datasets.py         数据质量检查 → report.md/csv
 ├── dp/                       可复用库（backbones.py / dp_lib.py / utils.py）
 ├── tools/                    run_local.py（一键） / summarize_runs.py（汇总）
 ├── train_local/  train/      两套入口脚本（本机 Windows / 学院 GPU），各自带 runs/
@@ -1494,10 +558,9 @@ project/
 
 ```
 LLM Usage Statement
-- 演示生成脚本 gen_demos_scripted.py：使用 Claude 起草 waypoint 控制器骨架与
-  world→base 坐标变换；小组自行调试抓取高度、夹爪闭合步数，并在 200 条轨迹上
-  验证成功率 100%。
-- DP 实现 dp_lib.py：使用 Claude 解释 Diffusion Policy 论文的噪声调度与
+- 演示生成：使用 Claude 起草 waypoint 控制器骨架与 world→base 坐标变换；
+  小组自行调试抓取高度、夹爪闭合步数，并逐条验证轨迹成功率。
+- DP 实现（`dp/dp_lib.py`、`dp/backbones.py`）：使用 Claude 解释 Diffusion Policy 论文的噪声调度与
   DDIM 采样公式，代码由小组自行编写并逐项对照论文核对。
 - 报告第 2、5 节：使用 Claude 改善语法与表达；技术结论均由小组验证。
 - 所有引用的外部代码/数据（ManiSkill、Diffusion Policy 官方仓库、
@@ -1511,7 +574,7 @@ LLM Usage Statement
 | 报错/现象 | 根因 | 解决 |
 |---|---|---|
 | `ModuleNotFoundError: No module named 'mplib'` | Windows 无 mplib 轮子 | 别用官方 mp 脚本；走下载转换 或 自写控制器 |
-| 找不到官方 DP 代码 / `baselines/` 目录不存在 | pip 包里不含 `examples/baselines/` | 用 `fetch_ms_baseline.py` 从 jsdelivr/gh-proxy 抓（第 6.5 节） |
+| 找不到官方 DP 代码 / `baselines/` 目录不存在 | pip 包里不含 `examples/baselines/` | 需要时从 GitHub 取；本机 github.com 不通，用 `cdn.jsdelivr.net/gh/...@main/<path>` 取单文件 |
 | `github.com` 连不上、clone 半途死掉 | 本机 GitHub 被墙 | 用 `cdn.jsdelivr.net/gh/...@main/<path>` 取单文件 |
 | 官方 `train.py` 报 `No module named 'tensorboard' / 'wandb'` | 依赖缺失 | `pip install tensorboard`；wandb 加 `--no-track` |
 | `TypeError: 'NoneType' object is not callable`（`PinocchioModel`） | SAPIEN 的 pinocchio 未装 | 已移植到 venv（`_pinocchio_dlls` + `.pth`）；换机器需重做 |
@@ -1638,16 +701,18 @@ emergentmind 汇总的 UNet vs MLP 对比（图像版 DP、官方设置）：
 
 > 结论：**直接用 A.6 的命令即可，不需要再改代码。** 代码细节见 `dp/backbones.py`（头注释含与官方源码的逐行对应关系）与 `train_local/README.md` §6。
 
-**A.3.2 训练成本（本地 4060 Ti 8GB，实测 MLP 82k iters ≈ 849 s ≈ 97 iters/s）**
+**A.3.2 训练成本（本地 4060 Ti 8GB，batch 256 实测）**
 
-| 主干 | 预估 iters/s（相对 MLP） | 单任务 82k iters | 3 任务 | 6 任务 |
-|---|---|---|---|---|
-| MLP | 1×（实测 97） | ~15 min | ~45 min | ~1.5 h |
-| 1D-UNet | 估 2~4× 慢 | 30~60 min | 1.5~3 h | 3~6 h |
-| Transformer | 估 2~5× 慢 | 30~75 min | 1.5~4 h | 3~8 h |
-| **合计（3 主干）** | | **~1.5~2.5 h** | **~4.5~7.5 h（一晚）** | ~9~15 h（上集群） |
+| 主干 | 实测速度 | 相对 MLP | 单任务 82k iters | 3 任务 | 6 任务 |
+|---|---|---|---|---|---|
+| MLP（0.353 M） | 97 iters/s（82k iters ≈ 849 s） | 1× | ~15 min | ~45 min | ~1.5 h |
+| 1D-UNet（66.418 M） | ~80 ms/iter ≈ 12 iters/s | ~8× 慢 | ~1.9 h | ~5.7 h | ~11 h |
+| Transformer（8.972 M） | ~55 ms/iter ≈ 18 iters/s | ~5× 慢 | ~1.3 h | ~3.8 h | ~7.6 h |
+| **合计（3 主干）** | | | **~3.4 h** | **~10 h（过夜）** | ~20 h（尽量上集群） |
 
-> ⚠️ 上表是估算。**动手第一件事**：`--epochs 2` 冒烟时看打印的 iters/s，用实测值重算再决定做几个任务。
+> 口径：batch 256、`Tp=16`、obs 42 维；UNet/Transformer 的数字来自真机 `compute_loss` 反传的平均耗时（含调度开销，未含数据加载）。
+> 按 30k iters（官方 baseline 常用的 `--total-iters 30000`）算则是 **UNet ≈ 40 min、Transformer ≈ 27 min、MLP ≈ 5 min**。
+> ⚠️ 仍然是量级参考：**动手第一件事**还是 `--epochs 2` 冒烟时看打印的 iters/s，用实测值重算再决定做几个任务。
 
 **A.3.3 推荐的裁剪**
 
@@ -1664,15 +729,15 @@ emergentmind 汇总的 UNet vs MLP 对比（图像版 DP、官方设置）：
 | 任务 | 难度 | 动作空间 | 预期作用 |
 |---|---|---|---|
 | PickCube-v1 | 易（已有 96% MLP 基线） | 4 维 `pd_ee_delta_pos` | 锚点：验证「易任务打平」 |
-| StackCube-v1 | 中 | 4 维 | 文献锚点（99/99），数据需转换 |
+| StackCube-v1 | 中 | 4 维 | 文献锚点（99/99），数据需自行生成（§4） |
 | PegInsertionSide-v1 | **难** | **7 维 `pd_ee_delta_pose`** | 分化点：预期 UNet ≫ MLP |
 
 两个前置注意：
 
-1. **StackCube / PegInsertionSide 的数据集还没转**，先跑教程 §4.1 的 `convert_all.py`：
-   - StackCube：`--max-episode-steps 200`（官方 baselines.sh）
-   - PegInsertionSide：`pd_ee_delta_pose` + `--max-episode-steps 300`，动作 7 维（有旋转），数据集文件名后缀是 `.state.pd_ee_delta_pose.physx_cpu.h5` —— `dp.dp_lib.find_dataset` 现在只认 `pd_ee_delta_pos`，转完**手动用 `--h5` 传路径**，或把 `H5_SUFFIX` 改成任务相关的。
-2. 转换出来的演示成功率可能不到 100%，先跑 `check_datasets.py` 看条数和质量再训。
+1. **StackCube / PegInsertionSide 的数据集还没生成**（§4 的生成脚本已删除，需要时从 `.ref/教程_v0_full.md` 恢复）。注意：
+   - StackCube 用 `pd_ee_delta_pos`（4 维）+ `--max-episode-steps 200`
+   - PegInsertionSide 要 `pd_ee_delta_pose`（7 维，有旋转）+ `--max-episode-steps 300`；数据集后缀是 `.state.pd_ee_delta_pose.physx_cpu.h5`，而 `dp.dp_lib.find_dataset` 只认 `pd_ee_delta_pos`，所以要**手动用 `--h5` 传路径**，或改 `H5_SUFFIX`。
+2. 新生成的数据集先质检再训（要点见 §5.4）：条数、成功率、动作落在 `[-1,1]`、夹爪通道是否双峰。
 
 ### A.5 代码接入要点（已落地，供理解改动）
 
@@ -1717,7 +782,6 @@ python train_local/eval.py --ckpt train_local/runs/PickCube-v1_frac1.0_unet_seed
 python train_local/eval.py --ckpt train_local/runs/PickCube-v1_frac1.0_transformer_seed0/best.pt -n 50 --seed0 2000
 
 # ---- Step 2 中间难度：StackCube（先转数据集，见 A.4）----
-python convert_all.py StackCube-v1
 python train_local/train.py --env-id StackCube-v1 --max-episode-steps 200                 # mlp
 python train_local/train.py --env-id StackCube-v1 --max-episode-steps 200 --backbone unet
 python train_local/train.py --env-id StackCube-v1 --max-episode-steps 200 --backbone transformer
@@ -1764,7 +828,7 @@ python tools/summarize_runs.py --runs-dir train_local/runs --csv
 | UNet / Transformer 在 82k iters 发散或 loss 不降 | 先降 lr 到 5e-5 或加 warmup；**报告里声明每个主干用的 lr**（公平性允许调各自主干的 lr，只要数据/评测一致） |
 | GroupNorm 报错通道不整除 | `down_dims` 全是 8 的倍数（64/128/256），别乱改；`act_dim=7`（PegInsertionSide）只进 conv_in，无归一化，安全 |
 | Transformer 显存/速度超预期 | `d_model=192, n_layers=3` 砍一档 |
-| PegInsertionSide 演示成功率低 / 条数少 | 先 `check_datasets.py` 看质量；必要时降低 demo_frac 或换 LiftPegUpright-v1 当难任务 |
+| PegInsertionSide 演示成功率低 / 条数少 | 先按 §5.4 做质检；必要时降低 demo_frac 或换 LiftPegUpright-v1 当难任务 |
 | 三种主干 Eval 结果混入不同后端 | 全程 `physx_cpu` + seeds 2000..2049，跑之前 grep 确认 |
 | `Tp` 改了导致 UNet 形状错 | UNet 有 `assert Tp % 4 == 0`；做 Tp 消融时选 8/16/32 |
 
@@ -1773,4 +837,4 @@ python tools/summarize_runs.py --runs-dir train_local/runs --csv
 - Chi et al., *Diffusion Policy: Visuomotor Policy Learning via Action Diffusion*, RSS 2023（三大主干 + FiLM 的出处）
 - *Diffusion Models for Robotic Manipulation: A Survey*（arXiv 2504.8438）：三大架构的系统对比
 - U-DiT Policy（arXiv 2509.24579, 2025-09）：UNet vs Transformer 的最新组合方案
-- ManiSkill 官方 DP baseline（`examples/baselines/diffusion_policy/conditional_unet1d.py`）—— 本方案 UNet 的结构参照；想用官方原版可按教程 §6.5 的镜像通道拉取
+- ManiSkill 官方 DP baseline（`examples/baselines/diffusion_policy/conditional_unet1d.py`）—— 本方案 UNet 的结构参照；想用官方原版按 §6.5 的说明从 GitHub 取（本机 github.com 不通时的取文件方法见 §11）

@@ -39,10 +39,14 @@ python train_local/eval.py  --ckpt train_local/runs/PickCube-v1_frac1.0_unet_see
 | `../dp/utils.py` | `EMA` / `plot_curve`（两套 train.py 共用） |
 | `../tools/run_local.py` | 一键串起来；支持 `--backbone`、`--data-efficiency`、`--train-dir` |
 | `../tools/summarize_runs.py` | 扫描某个 `runs/` 下**全部**实验，汇总为 `SUMMARY_all.md`（`--csv` 可另导 CSV） |
+| `../scripts/` | 数据侧脚本：下载/转换/自写控制器生成演示、数据集质检、批量评测、抓官方基线（见各文件头 docstring） |
 
 ---
 
 ## 2. 训练
+
+> 本节到第 7 节的命令都假设**当前目录是 `train_local/`**（`cd train_local` 后执行）；
+> 在仓库根执行也可以，把 `train.py` / `eval.py` 写成 `train_local/train.py` / `train_local/eval.py` 即可。
 
 ```bash
 :: 默认：30000 iteration（对齐官方 DP baseline），主干 mlp
@@ -105,10 +109,7 @@ python eval.py --ckpt ...\best.pt -n 20 --use-raw
 
 输出：终端逐 episode 日志 + `eval_seed2000_n50.json`（含每个 episode 的 seed / success / steps）。
 
-**评测铁律**
-- 训练 seeds 用 `0,1,2...`，评测 seeds 用 `2000~2049`，**绝不重叠**
-- 每个任务至少 50 个 episode，报告里写 `n_ok/n_total`，不要只写百分比
-- 失败要分类（超时 / 提前终止），`eval.py` 已经自动统计
+**评测铁律**（完整三条见根 `README.md`）：训练 seeds `0,1,2...` 与评测 seeds `2000..2049` **绝不重叠**；每任务 ≥50 episode 且报告写 `n_ok/n_total`；失败分类（超时 / 提前终止）由 `eval.py` 自动统计。
 
 ---
 
@@ -200,6 +201,8 @@ python eval.py --ckpt runs\PickCube-v1_frac1.0_transformer_seed0\best.pt -n 50 -
 | `unet` | **官方 ConditionalUnet1D 完整移植**（每级 2 个残差块 + 2 个 mid 块 + ConvTranspose1d 上采样 + 时间嵌入/条件拼接后 FiLM） | **66.418 M** | DP 论文的默认主干（A1：无 obs encoder，global_cond = 归一化 obs 展平） |
 | `transformer` | **官方 `TransformerForDiffusion` 完整移植**（DP-T：cond memory = 时间 token + To 个 obs token 经 MLP 编码，动作 token 走 TransformerDecoder 因果 self-attn + cross-attn） | **8.972 M** | 论文 DP-T 主干（无 obs encoder，cond = 归一化 obs[:, :To]）；默认 `n_layer=8, n_head=4, n_emb=256, p_drop_attn=0.3, causal_attn=True, n_cond_layers=0` |
 
+量级对比：**MLP : Transformer : UNet ≈ 1 : 25 : 188**（同一任务、同一 To/Tp 下的实测值；换任务或改 `obs_dim` / `Tp` 会变）。
+
 要点：
 
 - **`eval.py` 零改动**：`backbone` 随 `model_kwargs` 存进 checkpoint，反序列化时自动用对的主干；旧的 MLP checkpoint 也能直接加载（已实测）。
@@ -231,7 +234,7 @@ python train.py --env-id StackCube-v1 --backbone unet --max-episode-steps 200
 
 | 事实 | 影响 |
 |---|---|
-| RTX 4060 Ti 8 GB，torch 2.14.0+cu126，`cuda.is_available()=True` | 训练走 GPU，模型 0.35~3.3 M 参数，显存 < 2 GB |
+| RTX 4060 Ti 8 GB，torch 2.14.0+cu126，`cuda.is_available()=True` | 训练走 GPU；模型 0.35 M（MLP）/ 8.97 M（Transformer）/ 66.4 M（UNet），batch 256 峰值显存实测 ≤ 2.2 GB |
 | `physx_cuda` 报 `Could not find module 'cuda.dll'`（没装 CUDA Toolkit） | **不能**用 GPU 并行仿真 |
 | `physx_cpu` 不支持 `num_envs>1` | 评测只能单环境串行 |
 | 无 Vulkan | 不能渲染/录视频（所以 `eval.py` 只跑数值评测） |
@@ -240,17 +243,9 @@ python train.py --env-id StackCube-v1 --backbone unet --max-episode-steps 200
 
 ---
 
-## 9. 实测参考（PickCube-v1，state 观测 / `pd_ee_delta_pos`）
+## 9. 实测结论（PickCube-v1，state 观测 / `pd_ee_delta_pos`）
 
-都在 held-out seeds `2000..2049` 上评测（50 episode）：
-
-| 演示条数 | 主干 | 总迭代数 | 成功率 | 成功/总数 | 训练用时 |
-|---|---|---|---|---|---|
-| 200 | mlp | 30,000 | 60.0% | 30/50 | ~310 s |
-| 1000 | mlp | 30,000 | 64.0% | 32/50 | ~315 s |
-| 900 | mlp | 82,200（`--epochs 300`） | **96.0%** | 48/50 | ~849 s |
-
-其它：MLP 模型 0.353 M 参数；96% 那轮 best val loss ≈ 0.0153。
+> 具体成绩表（MLP 60%→96%、旧小 UNet 100% 等）统一放在根 `README.md` 的「当前进展」，这里只记两条结论。
 
 > 💡 **不要用短训练的结果下结论。** 实测：只训 150 epoch（约 4000 iter，官方 1/7）时，动作方向已学对，但夹爪通道会输出 ~0.2~0.7 的中间值而不是 ±1，导致抓取失败、成功率为 0。**夹爪是双峰信号，欠训练时会退化成两峰平均** —— 这是 DP 的典型现象，务必训满再看结果。
 >
@@ -284,9 +279,10 @@ python train.py --env-id StackCube-v1 --backbone unet --max-episode-steps 200
 | DataLoader | 必须 `--num-workers 0` | 可 `--num-workers 8` | 两套 `train.py` 各自设默认值（本机 0、农场 8） |
 | 画图 | 无显示环境 → Agg | 同左 | `dp/utils.py::plot_curve` 强制 `matplotlib.use("Agg")`，没装 matplotlib 只警告不中断 |
 | 评测后端 | `physx_cpu` 单环境（无 CUDA Toolkit） | 可 `--sim-backend gpu --num-envs 32` | **同一组对比必须同后端**，否则结果不可比 |
-| 路径写法 | 文档里 `runs\...` 只是 Windows 示例 | Linux 用 `runs/...` | 代码全部用 `osp.join`，无平台专属拼接 |
+| 路径写法 | 文档示例里可能写 `runs\...` | Linux 用 `runs/...` | 代码**全部**用 `osp.join`，无平台专属拼接；两套约定（仓库根 / `train_local` 内）见第 2 节开头 |
 | 文件编码 | UTF-8（含中文注释） | 同左 | Linux 直接跑；本机若控制台乱码，`chcp 65001` 或用 `PYTHONUTF8=1` |
 | 评测 seeds | `2000..2049` | 同左 | 训练 seeds `0,1,2...` 与评测 seeds **绝不重叠** |
+| 改了目录名 / 搬家 | — | — | venv 里有 3 处写死的绝对路径（`activate.bat` / `pyvenv.cfg` / `_pinocchio_dlls.pth`）：跑 `python tools/fix_venv_paths.py --apply` 修，再在 PyCharm 里重选一次解释器。**代码本身没有绝对路径，不用改** |
 
 自检命令（两台机器都可以先跑这两条，确认环境与代码都没问题）：
 
