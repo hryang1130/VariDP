@@ -1,17 +1,15 @@
 """
-train.py — 本地训练 Diffusion Policy（单任务）
+train.py — 学院 GPU 机器（Linux / RTX 4080）上的训练脚本
 
-特点（针对本机环境做的适配）：
-  * 训练走 GPU（纯 PyTorch），不需要 physx_cuda / Vulkan
-  * 不需要 diffusers / wandb / tensorboard
-  * 输出 log.csv + loss_curve.png，方便直接贴进报告
-  * --demo-frac 支持数据效率实验
-  * --backbone 切换噪声预测主干（mlp / unet / transformer），用于结构对比实验
+与 train_local/train.py 的差别（训练循环与 checkpoint 格式完全一致，产物可互相评测）：
+  * 默认 --device cuda、--num-workers 8、pin_memory + persistent_workers（Linux 上安全）
+  * 结果默认存到 train/runs/（与本机结果分开，报告里好区分算力来源）
+  * 模型 / 数据代码复用 train_local（单一真源，避免两份实现漂移）
 
 用法：
-  python train.py --env-id PickCube-v1
-  python train.py --env-id PickCube-v1 --epochs 300 --demo-frac 0.5 --seed 1
   python train.py --env-id PickCube-v1 --backbone unet
+  python train.py --env-id PickCube-v1 --total-iters 30000 --seed 0
+  python train.py --env-id StackCube-v1 --max-episode-steps 200 --backbone unet
 """
 from __future__ import annotations
 
@@ -27,7 +25,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-# ---- 把仓库根目录挂到 sys.path，直接 import dp（装不装包都能跑）----
+# ---- 复用 dp 包里的模型 / 数据 / 训练工具（单一真源：dp/）----
 HERE = osp.dirname(osp.abspath(__file__))
 ROOT = osp.abspath(osp.join(HERE, ".."))
 if ROOT not in sys.path:
@@ -39,77 +37,71 @@ from dp.utils import EMA, plot_curve  # noqa: E402
 
 try:
     from mani_skill import DEMO_DIR as DEFAULT_DEMO_DIR
-except Exception:                                    # 没装 mani_skill 也能用
+except Exception:                                    # 没装 mani_skill 也能训
     DEFAULT_DEMO_DIR = osp.expanduser("~/.maniskill/demos")
 
 
-# --------------------------------------------------------------------------- #
 def build_args():
-    ap = argparse.ArgumentParser(description="本地训练 Diffusion Policy（单任务）")
+    ap = argparse.ArgumentParser(description="GPU 机器训练 Diffusion Policy（单任务）")
     ap.add_argument("--env-id", default="PickCube-v1")
     ap.add_argument("--h5", default=None, help="数据集路径；默认自动查找")
     ap.add_argument("--demo-dir", default=str(DEFAULT_DEMO_DIR))
-    ap.add_argument("--out", default="runs")
+    ap.add_argument("--out", default=osp.join(HERE, "runs"),
+                    help="输出根目录（默认 train/runs，与本机结果分开）")
     ap.add_argument("--exp-name", default=None)
 
     # 数据
-    ap.add_argument("--demo-frac", type=float, default=1.0, help="使用多少比例的演示（数据效率实验）")
+    ap.add_argument("--demo-frac", type=float, default=1.0)
     ap.add_argument("--val-frac", type=float, default=0.1)
-    ap.add_argument("--max-episodes", type=int, default=-1, help="只加载前 N 条（调试用）")
+    ap.add_argument("--max-episodes", type=int, default=-1)
 
-    # 模型 / DP 超参
-    ap.add_argument("--backbone", default="mlp", choices=["mlp", "unet", "transformer"],
-                    help="噪声预测主干；结构对比实验的唯一变量（unet/transformer 的层宽见 backbones.py）")
-    ap.add_argument("--obs-horizon", type=int, default=2, help="To")
-    ap.add_argument("--pred-horizon", type=int, default=16, help="Tp")
-    ap.add_argument("--action-horizon", type=int, default=8, help="Ta")
+    # 模型 / DP 超参（与 train_local 完全一致）
+    ap.add_argument("--backbone", default="mlp", choices=["mlp", "unet", "transformer"])
+    ap.add_argument("--obs-horizon", type=int, default=2)
+    ap.add_argument("--pred-horizon", type=int, default=16)
+    ap.add_argument("--action-horizon", type=int, default=8)
     ap.add_argument("--num-train-timesteps", type=int, default=100)
     ap.add_argument("--obs-feat-dim", type=int, default=256)
-    ap.add_argument("--hidden", type=int, default=256, help="仅 --backbone mlp 生效")
-    ap.add_argument("--n-layers", type=int, default=3, help="仅 --backbone mlp 生效")
-    ap.add_argument("--unet-down-dims", type=int, nargs="+", default=[256, 512, 1024],
-                    help="仅 --backbone unet 生效；论文 lowdim 配置为 256 512 1024")
-    ap.add_argument("--unet-kernel-size", type=int, default=5, help="仅 --backbone unet 生效")
-    ap.add_argument("--unet-n-groups", type=int, default=8, help="仅 --backbone unet 生效")
-    ap.add_argument("--unet-step-embed-dim", type=int, default=256,
-                    help="仅 --backbone unet 生效；论文 lowdim 配置为 256")
+    ap.add_argument("--hidden", type=int, default=256)
+    ap.add_argument("--n-layers", type=int, default=3)
+    ap.add_argument("--unet-down-dims", type=int, nargs="+", default=[256, 512, 1024])
+    ap.add_argument("--unet-kernel-size", type=int, default=5)
+    ap.add_argument("--unet-n-groups", type=int, default=8)
+    ap.add_argument("--unet-step-embed-dim", type=int, default=256)
     ap.add_argument("--unet-cond-predict-scale", action=argparse.BooleanOptionalAction,
-                    default=True, help="仅 --backbone unet 生效；论文 lowdim 配置为 True")
-    ap.add_argument("--tf-n-layer", type=int, default=8,
-                    help="仅 --backbone transformer 生效；论文 lowdim 配置为 8")
-    ap.add_argument("--tf-n-head", type=int, default=4,
-                    help="仅 --backbone transformer 生效；论文 lowdim 配置为 4")
-    ap.add_argument("--tf-n-emb", type=int, default=256,
-                    help="仅 --backbone transformer 生效；论文 lowdim 配置为 256")
-    ap.add_argument("--tf-p-drop-emb", type=float, default=0.0, help="仅 --backbone transformer 生效")
-    ap.add_argument("--tf-p-drop-attn", type=float, default=0.3,
-                    help="仅 --backbone transformer 生效；论文 lowdim 配置为 0.3")
-    ap.add_argument("--tf-causal-attn", action=argparse.BooleanOptionalAction, default=True,
-                    help="仅 --backbone transformer 生效；论文 lowdim 配置为 True")
-    ap.add_argument("--tf-n-cond-layers", type=int, default=0,
-                    help="仅 --backbone transformer 生效；0 = 用 MLP 编码条件（论文 lowdim 配置）")
+                    default=True)
+    ap.add_argument("--tf-n-layer", type=int, default=8)
+    ap.add_argument("--tf-n-head", type=int, default=4)
+    ap.add_argument("--tf-n-emb", type=int, default=256)
+    ap.add_argument("--tf-p-drop-emb", type=float, default=0.0)
+    ap.add_argument("--tf-p-drop-attn", type=float, default=0.3)
+    ap.add_argument("--tf-causal-attn", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--tf-n-cond-layers", type=int, default=0)
 
     # 训练
-    ap.add_argument("--total-iters", type=int, default=30000,
-                    help="总训练迭代数（官方 DP baseline 默认 30000）。未指定 --epochs 时按此换算 epoch")
-    ap.add_argument("--epochs", type=int, default=None,
-                    help="显式指定 epoch 数（会覆盖 --total-iters 的换算），快速试验用")
-    ap.add_argument("--batch", type=int, default=256)
+    ap.add_argument("--total-iters", type=int, default=30000)
+    ap.add_argument("--epochs", type=int, default=None)
+    ap.add_argument("--batch", type=int, default=256,
+                    help="为了和本机结果可比，默认仍 256；想加速可开 512/1024，"
+                         "但换了 batch 的结果不要和 256 的混在同一张表里")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--wd", type=float, default=1e-6)
     ap.add_argument("--ema-decay", type=float, default=0.995)
     ap.add_argument("--grad-clip", type=float, default=1.0)
-    ap.add_argument("--eval-every", type=int, default=10, help="每多少 epoch 做一次验证")
-    ap.add_argument("--save-every", type=int, default=0, help="0 表示只存 best/last")
-    ap.add_argument("--num-workers", type=int, default=0, help="Windows 建议 0")
+    ap.add_argument("--eval-every", type=int, default=10)
+    ap.add_argument("--save-every", type=int, default=0)
+    ap.add_argument("--num-workers", type=int, default=8, help="Linux 上可以开大；报错就降回 0")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
 
-    # 评测时用（写进 checkpoint，eval.py 会读）
+    # 评测用（写进 checkpoint，eval.py 会读）
     ap.add_argument("--control-mode", default="pd_ee_delta_pos")
     ap.add_argument("--obs-mode", default="state")
-    ap.add_argument("--sim-backend", default="cpu")
-    ap.add_argument("--max-episode-steps", type=int, default=100)
+    ap.add_argument("--sim-backend", default="cpu",
+                    help="写进 checkpoint；评测时可用 eval.py --sim-backend 覆盖。"
+                         "为了和已有结果可比，默认保持 cpu")
+    ap.add_argument("--max-episode-steps", type=int, default=100,
+                    help="PickCube 100 / StackCube 200 / PegInsertionSide 300")
     ap.add_argument("--num-inference-steps", type=int, default=10)
     return ap.parse_args()
 
@@ -118,6 +110,7 @@ def main():
     args = build_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+    torch.backends.cudnn.benchmark = True
 
     device = args.device
     if device == "auto":
@@ -127,14 +120,13 @@ def main():
              f"{torch.cuda.get_device_properties(0).total_memory/2**30:.1f} GB)"
              if device == "cuda" else ""))
 
-    # ---------------- 数据 ----------------
+    # ---------------- 数据（与 train_local 完全同一套逻辑） ----------------
     h5 = args.h5 or find_dataset(args.env_id, args.demo_dir)
     print(f"[data] {h5}")
     trajs = load_trajectories(h5, success_only=True, max_episodes=args.max_episodes)
     n_all = len(trajs)
 
     train_ids, val_ids = split_episodes(n_all, args.val_frac, args.seed)
-    # 数据效率实验：按比例从训练集里再裁一部分
     if args.demo_frac < 1.0:
         keep = max(1, int(round(len(train_ids) * args.demo_frac)))
         rng = np.random.default_rng(args.seed + 12345)
@@ -142,15 +134,12 @@ def main():
 
     train_trajs = [trajs[i] for i in train_ids]
     val_trajs = [trajs[i] for i in val_ids]
-
-    # 统计量只用训练集算（防止信息泄漏）
-    stats = compute_stats(train_trajs)
+    stats = compute_stats(train_trajs)                 # 统计量只用训练集，防泄漏
     To, Tp, Ta = args.obs_horizon, args.pred_horizon, args.action_horizon
     train_ds = DPDataset(train_trajs, stats, To=To, Tp=Tp)
     val_ds = DPDataset(val_trajs, stats, To=To, Tp=Tp) if val_trajs else None
     obs_dim = trajs[0][0].shape[-1]
     act_dim = trajs[0][1].shape[-1]
-
     print(f"[data] 演示总数 {n_all} | 训练 {len(train_ids)} 条/{len(train_ds)} 步 "
           f"| 验证 {len(val_ids)} 条/{len(val_ds) if val_ds else 0} 步 "
           f"| obs {obs_dim} 维 / act {act_dim} 维")
@@ -181,12 +170,15 @@ def main():
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, args.epochs))
     ema = EMA(model, args.ema_decay)
 
+    nw = args.num_workers
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
-                              num_workers=args.num_workers, drop_last=True)
+                              num_workers=nw, drop_last=True, pin_memory=(device == "cuda"),
+                              persistent_workers=(nw > 0))
     val_loader = (DataLoader(val_ds, batch_size=args.batch, shuffle=False,
-                             num_workers=args.num_workers) if val_ds else None)
+                             num_workers=nw, pin_memory=(device == "cuda"),
+                             persistent_workers=(nw > 0)) if val_ds else None)
 
-    # ---------------- 输出目录 ----------------
+    # ---------------- 输出 ----------------
     name = args.exp_name or (f"{args.env_id}_frac{args.demo_frac}"
                              f"_{args.backbone}_seed{args.seed}")
     out_dir = osp.join(args.out, name)
@@ -223,7 +215,7 @@ def main():
     )
     stats_json = {k: v.tolist() for k, v in stats.items()}
 
-    # ---------------- 训练循环 ----------------
+    # ---------------- 训练循环（与 train_local/train.py 一致） ----------------
     best = float("inf")
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
@@ -250,7 +242,8 @@ def main():
             vtot, vseen = 0.0, 0
             with torch.no_grad():
                 for obs_seq, act_seq in val_loader:
-                    obs_seq = obs_seq.to(device); act_seq = act_seq.to(device)
+                    obs_seq = obs_seq.to(device)
+                    act_seq = act_seq.to(device)
                     vtot += model.compute_loss(obs_seq, act_seq).item() * obs_seq.shape[0]
                     vseen += obs_seq.shape[0]
             val_loss = vtot / max(1, vseen)
@@ -263,7 +256,6 @@ def main():
                                      f"{val_loss:.6f}" if val_loss != "" else "",
                                      f"{sched.get_last_lr()[0]:.3e}", f"{time.time()-t0:.1f}"])
 
-        # 保存
         if val_loss != "" or epoch == args.epochs:
             ck = dict(config=cfg, stats=stats_json,
                       model_state_dict=model.state_dict(),
@@ -291,7 +283,8 @@ def main():
     print(f"  best score : {best:.5f}")
     print(f"  用时       : {time.time()-t0:.0f} s")
     print(f"  产物目录   : {osp.abspath(out_dir)}")
-    print(f"  下一步     : python eval.py --ckpt \"{osp.join(out_dir,'best.pt')}\" -n 50 --seed0 2000")
+    print(f"  下一步     : python eval.py --ckpt \"{osp.join(out_dir,'best.pt')}\" "
+          f"-n 50 --seed0 2000")
 
 
 if __name__ == "__main__":

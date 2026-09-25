@@ -6,7 +6,7 @@ dp_lib.py — 本地训练用的 Diffusion Policy（state 观测）与数据集
 只依赖 torch / numpy / h5py，不需要 diffusers、wandb、tensorboard。
 """
 from __future__ import annotations
-from backbones import build_noise_pred
+from .backbones import build_noise_pred
 
 import math
 from typing import Dict, List, Tuple
@@ -67,7 +67,13 @@ class DiffusionPolicy(nn.Module):
     def __init__(self, obs_dim: int, act_dim: int, obs_horizon: int = 2,
                  pred_horizon: int = 16, action_horizon: int = 8,
                  num_train_timesteps: int = 100, obs_feat_dim: int = 256,
-                 hidden: int = 256, n_layers: int = 3, backbone="mlp"):
+                 hidden: int = 256, n_layers: int = 3, backbone="mlp",
+                 unet_down_dims=(256, 512, 1024), unet_kernel_size: int = 5,
+                 unet_n_groups: int = 8, unet_step_embed_dim: int = 256,
+                 unet_cond_predict_scale: bool = True,
+                 tf_n_layer: int = 8, tf_n_head: int = 4, tf_n_emb: int = 256,
+                 tf_p_drop_emb: float = 0.0, tf_p_drop_attn: float = 0.3,
+                 tf_causal_attn: bool = True, tf_n_cond_layers: int = 0):
         super().__init__()
         assert action_horizon <= pred_horizon
         self.obs_dim, self.act_dim = obs_dim, act_dim
@@ -76,12 +82,31 @@ class DiffusionPolicy(nn.Module):
         self.num_train_timesteps = num_train_timesteps
 
         self.backbone = backbone
-        self.obs_encoder = MLP([obs_dim * obs_horizon, obs_feat_dim, obs_feat_dim])
-        self.t_emb = SinusoidalPosEmb(128)
+        # A1（对齐论文 state/lowdim 配置）：
+        #   unet        -> 无 obs encoder，global_cond = 归一化 obs[:, :To] 展平，cond_dim = obs_dim * To
+        #   transformer -> 无 obs encoder，cond = 归一化 obs[:, :To]（逐步，(B,To,obs_dim)）
+        #   mlp         -> 保留 obs encoder（MLP 主干是本项目自加的 baseline，论文未给对应网络）
+        if backbone == "unet":
+            self.cond_dim = obs_dim * obs_horizon
+            self.obs_encoder = None
+        elif backbone == "transformer":
+            self.cond_dim = obs_dim
+            self.obs_encoder = None
+        else:
+            self.cond_dim = obs_feat_dim
+            self.obs_encoder = MLP([obs_dim * obs_horizon, obs_feat_dim, obs_feat_dim])
+        self.t_emb = SinusoidalPosEmb(128)              # 仅 mlp / transformer 用
         # 噪声预测主干：mlp / unet / transformer（其余部分完全复用）
         self.noise_pred = build_noise_pred(
-            backbone, pred_horizon, act_dim, obs_feat_dim,
-            hidden=hidden, n_layers=n_layers)
+            backbone, pred_horizon, act_dim, self.cond_dim,
+            hidden=hidden, n_layers=n_layers,
+            unet_down_dims=unet_down_dims, unet_kernel_size=unet_kernel_size,
+            unet_n_groups=unet_n_groups, unet_step_embed_dim=unet_step_embed_dim,
+            unet_cond_predict_scale=unet_cond_predict_scale,
+            n_obs_steps=obs_horizon,
+            tf_n_layer=tf_n_layer, tf_n_head=tf_n_head, tf_n_emb=tf_n_emb,
+            tf_p_drop_emb=tf_p_drop_emb, tf_p_drop_attn=tf_p_drop_attn,
+            tf_causal_attn=tf_causal_attn, tf_n_cond_layers=tf_n_cond_layers)
 
         betas = cosine_beta_schedule(num_train_timesteps)
         self.register_buffer("betas", betas)
@@ -90,10 +115,22 @@ class DiffusionPolicy(nn.Module):
 
     # ---- 条件特征 ----
     def cond(self, obs_seq: torch.Tensor) -> torch.Tensor:
+        """unet：归一化 obs 展平；transformer：保留 (B, To, D) 逐步条件；mlp：MLP 编码"""
+        if self.backbone == "transformer":
+            return obs_seq
+        if self.backbone == "unet":
+            return obs_seq.reshape(obs_seq.shape[0], -1)
         return self.obs_encoder(obs_seq.reshape(obs_seq.shape[0], -1))
 
     def eps(self, x, t, c):
-        """统一契约：主干自己决定怎么用 x / t_emb / c"""
+        """统一契约：主干自己决定怎么用 x / t_emb / c
+
+        unet / transformer 走官方签名（原始 timestep + 条件），mlp 仍用预计算的 t_emb。
+        """
+        if self.backbone == "unet":
+            return self.noise_pred(x, t, global_cond=c)
+        if self.backbone == "transformer":
+            return self.noise_pred(x, t, cond=c)
         return self.noise_pred(x, self.t_emb(t), c)
 
     # ---- 训练损失：预测噪声 ----

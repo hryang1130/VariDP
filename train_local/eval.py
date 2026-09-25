@@ -15,14 +15,21 @@ from __future__ import annotations
 import argparse
 import json
 import os.path as osp
+import sys
 import time
 
 import gymnasium as gym
 import numpy as np
 import torch
 
+# ---- 把仓库根目录挂到 sys.path，直接 import dp（装不装包都能跑）----
+HERE = osp.dirname(osp.abspath(__file__))
+ROOT = osp.abspath(osp.join(HERE, ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 import mani_skill.envs  # noqa: F401  必须导入才会注册环境
-from dp_lib import DiffusionPolicy
+from dp.dp_lib import DiffusionPolicy  # noqa: E402
 
 
 def load_policy(ckpt_path: str, device: str, use_raw: bool = False):

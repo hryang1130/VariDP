@@ -5,3 +5,8 @@ wheels
 DASC7606C_cleaned.txt
 .idea/
 __pycache__
+.ref
+
+# 实验产物：checkpoint 很大（官方 UNet 单个 ~500 MB），不入库
+runs/
+*.pt

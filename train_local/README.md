@@ -1,22 +1,27 @@
-# 本地 DP 训练流程（RTX 4060 Ti / 8 GB）
+# 本机 DP 训练流程（Windows / RTX 4060 Ti 8 GB）
+
+本目录只有**入口脚本**（`train.py` / `eval.py`）；可复用的库在 `../dp/`，通用工具在 `../tools/`——
+两边机器（本机 Windows 与学院 GPU Linux）共用同一份代码，避免漂移。
 
 一套自包含的 Diffusion Policy 训练+评测流程，**不需要 diffusers / wandb / tensorboard，不需要 Vulkan，不需要 CUDA Toolkit**。
-训练走 GPU，评测走 CPU 单环境仿真。噪声预测主干可选 **MLP / 1D-UNet / Transformer**。
+训练走 GPU，评测走 CPU 单环境仿真。噪声预测主干可选 **MLP / 官方 UNet / 官方 Transformer(DP-T)**。
 
 ---
 
 ## 0. 一分钟上手
 
 ```bash
-cd train_local
+# 在仓库根目录（pythonProject1/）下执行即可，脚本会自动找到 dp/ 库
 
 :: 一键：检查数据 → 训练 → 评测 → 出汇总
-python run_local.py --env-id PickCube-v1
+python tools/run_local.py --env-id PickCube-v1 --backbone unet
 
 :: 只想分开跑
-python train.py --env-id PickCube-v1
-python eval.py  --ckpt runs\PickCube-v1_frac1.0_mlp_seed0\best.pt -n 50 --seed0 2000
+python train_local/train.py --env-id PickCube-v1 --backbone unet
+python train_local/eval.py  --ckpt train_local/runs/PickCube-v1_frac1.0_unet_seed0/best.pt -n 50 --seed0 2000
 ```
+
+（也可以 `cd train_local` 后跑 `python train.py`，sys.path 会自动把仓库根挂进来，两种方式等价。）
 
 前提：`~/.maniskill/demos/PickCube-v1/motionplanning/trajectory.state.pd_ee_delta_pos.physx_cpu.h5` 已存在（你已经有 1000 条的那份）。没有的话见教程第 4 节的 `convert_all.py` / `gen_demos_scripted.py`。
 
@@ -26,12 +31,14 @@ python eval.py  --ckpt runs\PickCube-v1_frac1.0_mlp_seed0\best.pt -n 50 --seed0 
 
 | 文件 | 作用 |
 |---|---|
-| `dp_lib.py` | DP 模型（DDPM 训练 / DDIM 采样）+ 数据集（episode 切窗 + 归一化统计） |
-| `backbones.py` | 三种噪声预测主干：MLP / 1D-UNet / Transformer（统一接口，见第 6 节） |
-| `train.py` | 单任务训练，输出 `log.csv` / `loss_curve.png` / `best.pt` / `last.pt` |
+| `train.py` | 单任务训练，输出 `log.csv` / `loss_curve.png` / `best.pt` / `last.pt`（默认 `--num-workers 0`，Windows 安全） |
 | `eval.py` | 在 held-out seeds 上评测（成功率 + 失败分类 + JSON 明细）；`--inference-steps` 做采样步数消融 |
-| `run_local.py` | 一键串起来；`--data-efficiency` 直接跑数据效率曲线（暂不支持 `--backbone`） |
-| `summarize_runs.py` | 扫描 `runs/` 下**全部**实验，汇总训练+评测产物为 `runs/SUMMARY_all.md`（`--csv` 可另导 CSV） |
+| `runs/` | 本机实验产物；**与农场的 `train/runs/` 分开存**，别混放 |
+| `../dp/backbones.py` | 三种主干：`MLPNoisePred` / 官方 `ConditionalUnet1D` / 官方 `TransformerForDiffusion`（见第 6 节） |
+| `../dp/dp_lib.py` | DP 模型（DDPM 训练 / DDIM 采样）+ 数据集（episode 切窗 + 归一化统计） |
+| `../dp/utils.py` | `EMA` / `plot_curve`（两套 train.py 共用） |
+| `../tools/run_local.py` | 一键串起来；支持 `--backbone`、`--data-efficiency`、`--train-dir` |
+| `../tools/summarize_runs.py` | 扫描某个 `runs/` 下**全部**实验，汇总为 `SUMMARY_all.md`（`--csv` 可另导 CSV） |
 
 ---
 
@@ -109,13 +116,13 @@ python eval.py --ckpt ...\best.pt -n 20 --use-raw
 
 ```bash
 :: 单档：训练 + 评测 + 出 SUMMARY
-python run_local.py --env-id PickCube-v1
+python tools/run_local.py --env-id PickCube-v1 --backbone unet
 
 :: 数据效率曲线：1.0 / 0.5 / 0.25 / 0.1 四档
-python run_local.py --env-id PickCube-v1 --data-efficiency
+python tools/run_local.py --env-id PickCube-v1 --backbone unet --data-efficiency
 
 :: 只打印命令不执行
-python run_local.py --env-id PickCube-v1 --dry-run
+python tools/run_local.py --env-id PickCube-v1 --backbone unet --dry-run
 ```
 
 数据效率实验会输出 `runs/SUMMARY_data_efficiency.md`，形如：
@@ -126,14 +133,15 @@ python run_local.py --env-id PickCube-v1 --dry-run
 
 > 做数据效率实验时注意两点：**每档用相同的 `--total-iters`**（别用"每档都训 300 epoch"，那样小数据档反而迭代更多，变量就不干净了），以及**每档至少 2~3 个训练种子**（换种子能差 30+ 个百分点）。
 
-### 全量汇总报告 `summarize_runs.py`
+### 全量汇总报告 `tools/summarize_runs.py`
 
-`run_local.py` 只汇总**它本次跑到的那几档**（文件名固定为 `SUMMARY_<env>.md`）。要把 `runs/` 下**已经存在的所有实验**（跨任务、跨主干、跨 seed）一次性汇总，用这个：
+`tools/run_local.py` 只汇总**它本次跑到的那几档**（文件名固定为 `SUMMARY_<env>.md`）。要把 `runs/` 下**已经存在的所有实验**（跨任务、跨主干、跨 seed）一次性汇总，用这个：
 
 ```bash
-python summarize_runs.py                              # 扫描 runs/ → runs/SUMMARY_all.md
-python summarize_runs.py --env-id PickCube-v1         # 只看某个任务
-python summarize_runs.py --out runs/REPORT.md --csv   # 指定输出路径 + 额外导出同名 .csv
+python tools/summarize_runs.py                             # 默认扫 train_local/runs → SUMMARY_all.md
+python tools/summarize_runs.py --env-id PickCube-v1        # 只看某个任务
+python tools/summarize_runs.py --runs-dir train/runs       # 扫学院 GPU 那套结果
+python tools/summarize_runs.py --out runs/REPORT.md --csv  # 指定输出路径 + 额外导出同名 .csv
 ```
 
 报告共 5 节，可直接贴进报告：
@@ -161,7 +169,7 @@ Track 3 一般除了复现 baseline，还要至少一个改进/消融。下面�
 | 预测长度 `Tp` | `python train.py ... --pred-horizon 8` / `16` / `32` | 一次预测多长的动作块 |
 | 执行长度 `Ta` | `python train.py ... --action-horizon 4` / `8` / `16` | receding horizon 每次真正执行几步 |
 | **DDIM 采样步数** | `python eval.py --ckpt runs\PickCube-v1_frac1.0_mlp_seed0\best.pt -n 50 --inference-steps 10` / `25` / `50` | 采样精度 vs 成功率（不改训练） |
-| 数据效率 | `python run_local.py --env-id PickCube-v1 --data-efficiency` | 演示条数 1.0/0.5/0.25/0.1 |
+| 数据效率 | `python tools/run_local.py --env-id PickCube-v1 --backbone unet --data-efficiency` | 演示条数 1.0/0.5/0.25/0.1 |
 | 权重平均的作用 | `python eval.py --ckpt ... --use-raw` | EMA 权重 vs 原始权重 |
 
 > `--inference-steps` 是**只改评测、不动训练**的开关：拿同一个 checkpoint，采样步数越多通常越稳、但越慢。注意：96% 的高基线下它提升空间有限（天花板效应），在欠训练的 checkpoint 上对比才有区分度。
@@ -189,16 +197,21 @@ python eval.py --ckpt runs\PickCube-v1_frac1.0_transformer_seed0\best.pt -n 50 -
 | `--backbone` | 主干 | 参数量（实测） | 说明 |
 |---|---|---|---|
 | `mlp` | 展平拼接 + 3 层 MLP | **0.353 M** | 默认，baseline |
-| `unet` | 1D 时序 UNet（下采样-上采样 + skip + FiLM） | **2.806 M** | DP 论文的默认主干 |
-| `transformer` | GPT 式因果注意力（条件/时间步作前缀） | **3.348 M** | 表达力强，但训练更挑超参 |
+| `unet` | **官方 ConditionalUnet1D 完整移植**（每级 2 个残差块 + 2 个 mid 块 + ConvTranspose1d 上采样 + 时间嵌入/条件拼接后 FiLM） | **66.418 M** | DP 论文的默认主干（A1：无 obs encoder，global_cond = 归一化 obs 展平） |
+| `transformer` | **官方 `TransformerForDiffusion` 完整移植**（DP-T：cond memory = 时间 token + To 个 obs token 经 MLP 编码，动作 token 走 TransformerDecoder 因果 self-attn + cross-attn） | **8.972 M** | 论文 DP-T 主干（无 obs encoder，cond = 归一化 obs[:, :To]）；默认 `n_layer=8, n_head=4, n_emb=256, p_drop_attn=0.3, causal_attn=True, n_cond_layers=0` |
 
 要点：
 
 - **`eval.py` 零改动**：`backbone` 随 `model_kwargs` 存进 checkpoint，反序列化时自动用对的主干；旧的 MLP checkpoint 也能直接加载（已实测）。
-- **UNet / Transformer 的层宽**在 `backbones.py` 的 `build_noise_pred()` 里改：`down_dims=(64,128,256)`、`d_model=256, transformer_layers=4, n_heads=4`。
+- **UNet 超参**在 `train.py` 里用 `--unet-down-dims 256 512 1024`、`--unet-kernel-size 5`、`--unet-n-groups 8`、`--unet-step-embed-dim 256`、`--unet-cond-predict-scale/--no-unet-cond-predict-scale` 调（默认即论文 lowdim 配置）。
+- **Transformer 超参**同理：`--tf-n-layer 8`、`--tf-n-head 4`、`--tf-n-emb 256`、`--tf-p-drop-emb 0.0`、`--tf-p-drop-attn 0.3`、`--tf-causal-attn/--no-tf-causal-attn`、`--tf-n-cond-layers 0`（默认即论文 lowdim 配置）。
+- **接口与官方一致**：unet 用 `forward(sample, timestep, global_cond=...)`，transformer 用 `forward(sample, timestep, cond=...)`（cond 是 `(B, To, obs_dim)` 的逐步观测），时间嵌入都在主干内部做，`DiffusionPolicy.eps()` 按 backbone 分发；只有 mlp 仍是 `forward(x, t_emb, c)`。
+- ⚠️ **2026-09-25 起 UNet 与 Transformer 主干都换成了官方结构**（旧版分别是 2.806 M 的小型 UNet 和 3.348 M 的 GPT 式 Transformer）。旧的 `runs/*_unet_*/best.pt`、`runs/*_transformer_*/best.pt` 结构不兼容、无法再加载，旧成绩需重训；只有 mlp 的旧 checkpoint 不受影响。
 - 实验目录名自带主干，三组结果互不覆盖。
 - **公平性红线**：做结构对比时别只跑一个训练种子（换种子能差 30+ 个百分点），并且必须固定数据/划分/迭代数/评测 seeds 不变——只让 `--backbone` 变。
-- `run_local.py` 目前不转发 `--backbone`，结构对比请直接用 `train.py` + `eval.py`。
+- `tools/run_local.py` 现在支持 `--backbone`（目录名与 `train.py` 一致，含主干），`--train-dir train` 还能直接驱动农场那套入口脚本。
+- **论文参数口径（答辩常被问）**：论文 Table 8 里 DP-T 的 `#D-params`（扩散网络）= **9 M**，另有 `#V-params`（视觉编码器，**image 版才有**）= 22 M，两者相加 31 M。我们的观测是 state、没有相机，所以对应的是 **9 M** 那一档（实测 8.972 M）——别把 22 M 的视觉编码器算进来。
+- **与论文 lowdim 配置的剩余差异**（都为训练/评测侧全局项，尚未对齐）：obs 归一化用 z-score（论文用 min/max → [-1,1]）、推理默认 10 步（论文 lowdim 配置 100 步）、AdamW betas/warmup 与 EMA 动态衰减（论文 transformer 用 wd 1e-3 + 1000 步 warmup）。改这些会同时影响三种主干，属于另一组消融。
 
 ---
 
@@ -253,7 +266,38 @@ python train.py --env-id StackCube-v1 --backbone unet --max-episode-steps 200
 | 成功率全 0，训练 loss 却不高 | 欠训练（夹爪退化成两峰平均） | 训满 `--total-iters 30000` 或更多；或提高 `--inference-steps` |
 | 成功率全 0 且 episode 都跑满 max_steps | 演示太长 / `max_episode_steps` 太小 | 按官方 `baselines.sh`：PickCube 100、StackCube 200、PegInsertionSide 300 |
 | 验证 loss 低但成功率 0 | 数据划分泄漏 | 已按 episode 划分；别自己改成按单步切 |
-| UNet 报 `Tp 必须能被下采样次数整除` | `Tp` 不是 4 的倍数 | 用 `Tp=8/16/32`，或把 `down_dims` 减一档 |
+| UNet 报 `Tp 必须能被 2^(len(down_dims)-1) 整除` | `Tp` 不是 4 的倍数（默认 down_dims 三级） | 用 `Tp=8/16/32`，或 `--unet-down-dims 256 512` 减一档 |
 | `未知 backbone: xxx` | `--backbone` 拼错 | 只能填 `mlp` / `unet` / `transformer` |
-| `CUDA out of memory` | batch 太大 | `--batch 128`，或把 `down_dims` / `d_model` 调小 |
+| `CUDA out of memory` | batch 太大 | `--batch 128`，或把 `--unet-down-dims` / `--tf-n-emb` 调小（官方结构在 8GB 4060 Ti 上 batch 256 实测：UNet 峰值 ~2.2 GB、Transformer ~1.0 GB，一般不会 OOM） |
 | 训练 loss 变 NaN | 低方差观测维被放大 | 已在 `compute_stats` 里做 `std<1e-3 → 1.0` 保护；若仍 NaN 检查数据集是否有异常值 |
+
+---
+
+## 11. 两台机器都能跑：跨平台清单
+
+代码层已经做成"一份库 + 两套入口"，本机（Windows / 4060 Ti）与学院 GPU（Linux / 4080）行为一致：
+
+| 关注点 | 本机 Windows | 学院 GPU（Linux） | 代码里的处理 |
+|---|---|---|---|
+| 库代码 | `dp/` | 同一份 `dp/` | `train_local/` 与 `train/` 都 `import dp.*`，脚本自动把仓库根挂进 `sys.path`，**装不装包都能跑** |
+| 依赖 | 现成 `venv/`（也可 `uv sync`） | `uv sync`（读仓库根 `pyproject.toml`） | 同一份依赖声明；torch 走 cu126 官方源 |
+| DataLoader | 必须 `--num-workers 0` | 可 `--num-workers 8` | 两套 `train.py` 各自设默认值（本机 0、农场 8） |
+| 画图 | 无显示环境 → Agg | 同左 | `dp/utils.py::plot_curve` 强制 `matplotlib.use("Agg")`，没装 matplotlib 只警告不中断 |
+| 评测后端 | `physx_cpu` 单环境（无 CUDA Toolkit） | 可 `--sim-backend gpu --num-envs 32` | **同一组对比必须同后端**，否则结果不可比 |
+| 路径写法 | 文档里 `runs\...` 只是 Windows 示例 | Linux 用 `runs/...` | 代码全部用 `osp.join`，无平台专属拼接 |
+| 文件编码 | UTF-8（含中文注释） | 同左 | Linux 直接跑；本机若控制台乱码，`chcp 65001` 或用 `PYTHONUTF8=1` |
+| 评测 seeds | `2000..2049` | 同左 | 训练 seeds `0,1,2...` 与评测 seeds **绝不重叠** |
+
+自检命令（两台机器都可以先跑这两条，确认环境与代码都没问题）：
+
+```bash
+# 1) 库与入口脚本能导入（不训练）
+python -c "import dp; print(dp.backbones.BACKBONES)"
+python train_local/train.py --help > $null     # Linux 上用 /dev/null
+
+# 2) 真机冒烟：12 条演示、1 epoch（几十秒，产物在 runs/_smoke/ 下）
+python train_local/train.py --env-id PickCube-v1 --backbone unet \
+    --out train_local/runs/_smoke --exp-name smoke --epochs 1 --max-episodes 12
+```
+
+> 冒烟产物体积不小（官方 UNet 每个 ckpt ≈ 500 MB），跑完记得删掉 `runs/_smoke/`。

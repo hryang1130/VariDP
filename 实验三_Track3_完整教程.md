@@ -3,6 +3,21 @@
 > 目标：在最少 6 个不同的 ManiSkill 任务上**自己采集/生成专家演示**，训练并评测 Diffusion Policy（DP）基线，并围绕一个研究问题做受控实验。
 > 本教程按“照着做就能出结果”的顺序组织，所有命令都适配**你本机已装好的 venv 环境**。
 
+> ⚠️ **代码真源提示（文档更新：2026-09-25）**
+>
+> 本文写作时项目还没有 `dp/` 库，教程里贴的代码块（`dp_lib.py` / `train_dp.py` / `eval_dp.py` 等）是**当时的历史版本（MLP-only）**，只用来讲原理；**与仓库不一致时一律以仓库代码为准**：
+>
+> | 教程里的代码块 | 现在的真源 |
+> |---|---|
+> | 6.3 的 `dp_lib.py` | `dp/dp_lib.py`（+ `dp/backbones.py` 三种主干 + `dp/utils.py`） |
+> | 7.1 的 `train_dp.py` | `train_local/train.py`（本机）/ `train/train.py`（学院 GPU） |
+> | 8.1 的 `eval_dp.py` | `train_local/eval.py` / `train/eval.py`（后者支持并行仿真） |
+> | 7.2 / 8.2 的批量脚本 | `tools/run_local.py`（一键）/ `tools/summarize_runs.py`（汇总） |
+> | 4 / 5 的演示生成与质检脚本 | 仓库未收录（按教程直接存成脚本用即可） |
+>
+> 主干结构在 2026-09-25 已升级为**官方实现的完整移植**：UNet = `ConditionalUnet1D`（66.418 M），
+> Transformer = `TransformerForDiffusion`（DP-T，8.972 M），MLP 基线不变（0.353 M）。详见 `train_local/README.md` 第 6 节。
+
 ---
 
 ## 目录
@@ -717,6 +732,9 @@ plt.tight_layout(); plt.savefig("traj_overview.png", dpi=130)
 
 ### 6.3 模型 + 数据集代码 `dp_lib.py`
 
+> 📌 **本节代码是历史版本（MLP-only），用于讲解原理**。现行实现见 `dp/dp_lib.py`（模型/数据集/加噪/采样）
+> 与 `dp/backbones.py`（MLP / 官方 UNet / 官方 Transformer 三种主干）；接口差异见附录 A.5。
+
 ```python
 # dp_lib.py — 极简 Diffusion Policy（state 观测 / MLP 版）
 from __future__ import annotations
@@ -1032,16 +1050,20 @@ set demos=100
 
 ## 7. 第 5 步：逐任务训练
 
-> 📦 **本节代码已写成现成可跑的一整套脚本**：`train_local/`
+> 📦 **本节代码已写成现成可跑的一整套脚本**（2026-09-25 目录已重构为 库 / 工具 / 入口 三层）：
 > ```
-> train_local/
-> ├── README.md        使用说明 + 参数表 + 排错表
-> ├── dp_lib.py        模型 + 数据集（下 7.1 的代码就是它）
-> ├── train.py         训练（支持 --total-iters / --demo-frac / 出 loss 曲线）
-> ├── eval.py          本地 CPU 仿真评测（held-out seeds + 失败分类）
-> └── run_local.py     一键：数据检查 → 训练 → 评测 → 出 SUMMARY.md
+> pythonProject1/
+> ├── dp/                      可复用库（两台机器共用同一份）
+> │   ├── backbones.py         三种主干：MLP / 官方 UNet / 官方 Transformer(DP-T)
+> │   ├── dp_lib.py            模型 + 数据集（下 7.1 的代码就是它）
+> │   └── utils.py             EMA / loss 曲线
+> ├── tools/
+> │   ├── run_local.py         一键：数据检查 → 训练 → 评测 → 出 SUMMARY
+> │   └── summarize_runs.py    汇总某个 runs/ → SUMMARY_all.md
+> ├── train_local/             本机 Windows 入口（train.py / eval.py + README + runs/）
+> └── train/                   学院 GPU 入口（train.py / eval.py + README + runs/）
 > ```
-> 直接在 `train_local/` 下跑：`python run_local.py --env-id PickCube-v1`
+> 在仓库根目录跑：`python tools/run_local.py --env-id PickCube-v1 --backbone unet`
 
 ### 7.1 训练脚本 `train_dp.py`
 
@@ -1446,10 +1468,10 @@ project/
 ├── convert_all.py            批量重放转换
 ├── gen_demos_scripted.py     自建脚本控制器生成演示   ← “自己生成”证据
 ├── check_datasets.py         数据质量检查 → report.md/csv
-├── dp_lib.py                 模型 + 数据集
-├── train_dp.py               训练（支持 --demo-frac 做数据效率实验）
-├── eval_dp.py / eval_all.py  评测 + 汇总
-├── runs/<task>_frac<f>_seed<s>/best.pt   checkpoints
+├── dp/                       可复用库（backbones.py / dp_lib.py / utils.py）
+├── tools/                    run_local.py（一键） / summarize_runs.py（汇总）
+├── train_local/  train/      两套入口脚本（本机 Windows / 学院 GPU），各自带 runs/
+├── runs/<task>_frac<f>_<backbone>_seed<s>/best.pt   checkpoints（含主干名）
 ├── data/                     生成的数据集（或下载链接）
 ├── videos/                   每任务成功/失败 rollout（若无 Vulkan，用帧序列拼 GIF）
 └── REPORT.md
@@ -1503,6 +1525,8 @@ LLM Usage Statement
 | 训练爆炸 / loss = NaN | 低方差维度被 `std≈0` 放大 | `std < 1e-3` 时不做缩放；梯度裁剪 1.0 |
 | 验证损失很低但成功率是 0 | 按单步随机划分导致泄漏 | 按 episode 划分 |
 | 转换进程退出码非 0 | 主进程删分片被安全删除拦截 | 数据已合并；手动删 `*.physx_cpu.{0,1,2,3}.h5/.json` |
+| 换了 `unet` / `transformer` 主干后旧 ckpt 加载报 `Missing key(s) in state_dict: "noise_..."` | 2026-09-25 起主干换成官方实现，结构变了（参数量 2.806 / 3.348 M → 66.418 / 8.972 M） | 旧 unet/transformer 结果作废，**必须重训**；只有 `mlp` 的旧 ckpt 仍可直接评测 |
+| 想知道"DP 的 Transformer 到底多少参数" | 论文 Table 8 里 DP-T 的 `#D-params`（扩散网络）= **9 M**，另有 `#V-params`（视觉编码器，image 版才有）= 22 M，两者相加 31 M 常被误当成 state 版参数 | state 版（我们的场景）就是 **9 M 量级**，实测 8.972 M；22 M 那部分只属于图像版的两路 ResNet18 |
 
 ---
 
@@ -1532,7 +1556,7 @@ LLM Usage Statement
 
 > 对应评分表 **Further investigation（20 分）** 的主实验。
 > 目标：在同一套数据 / 评测协议下，对比 **MLP / 1D-UNet / Transformer** 三种 DP 主干的训练效果。
-> **代码已落地到 `train_local/`**（`backbones.py` 提供三种主干，`dp_lib.py` / `train.py` 已接入 `--backbone`），
+> **代码已落地**（`dp/backbones.py` 提供三种主干，`dp/dp_lib.py` / `train_local/train.py` 已接入 `--backbone`），
 > 本附录给**方案、命令与报告写法**，训练由你自己执行。
 
 ### A.0 结论先行（推荐方案）
@@ -1606,13 +1630,13 @@ emergentmind 汇总的 UNet vs MLP 对比（图像版 DP、官方设置）：
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| `backbones.py`（UNet + Transformer + 工厂） | ✅ 已写好 | 三种主干统一接口 `forward(x, t_emb, c) → ε̂` |
-| `dp_lib.py` 接入 | ✅ 已改 | `DiffusionPolicy(backbone=...)`，`compute_loss`/`sample` 全部复用 |
-| `train.py` 接入 | ✅ 已改 | `--backbone` 写进 ckpt，实验名带主干 |
-| `eval.py` | ✅ 零改动 | `backbone` 随 `model_kwargs` 存进 ckpt，自动识别；旧 MLP ckpt 向后兼容 |
-| 冒烟验证 | ✅ 已过 | 三种主干都能训练（参数量 0.353 / 2.806 / 3.348 M） |
+| `dp/backbones.py`（MLP / UNet / Transformer + 工厂） | ✅ 已写好（2026-09-25 升级） | UNet = 官方 `ConditionalUnet1D` 完整移植（每级 2 残差块 + 2 mid 块 + ConvTranspose1d 上采样 + 时间嵌入与条件拼接后 FiLM）；Transformer = 官方 `TransformerForDiffusion`（DP-T，cond memory + TransformerDecoder cross-attn + 因果 mask）。接口按主干分发：`forward(x, timestep, global_cond=...)` / `forward(x, timestep, cond=...)` / MLP 仍是 `forward(x, t_emb, c)` |
+| `dp/dp_lib.py` 接入 | ✅ 已改 | `DiffusionPolicy(backbone=...)`，`compute_loss`/`sample` 全部复用；unet/transformer 走 A1 条件路径（无 obs encoder，条件=归一化 obs） |
+| `train.py` 接入 | ✅ 已改 | `--backbone` 与主干超参（`--unet-*` / `--tf-*`）写进 ckpt，实验名带主干 |
+| `eval.py` | ✅ 零改动 | `backbone` 随 `model_kwargs` 存进 ckpt，自动识别；**旧 unet / transformer ckpt 已不兼容**（结构变了），旧 MLP ckpt 仍兼容 |
+| 冒烟验证 | ✅ 已过 | 三种主干都能训练；参数量 0.353 / **66.418** / **8.972** M（后两者与官方实现权重互灌、前向输出误差 0） |
 
-> 结论：**直接用 A.6 的命令即可，不需要再改代码。** 代码细节见 `train_local/backbones.py` 与 `train_local/README.md` §6。
+> 结论：**直接用 A.6 的命令即可，不需要再改代码。** 代码细节见 `dp/backbones.py`（头注释含与官方源码的逐行对应关系）与 `train_local/README.md` §6。
 
 **A.3.2 训练成本（本地 4060 Ti 8GB，实测 MLP 82k iters ≈ 849 s ≈ 97 iters/s）**
 
@@ -1647,56 +1671,68 @@ emergentmind 汇总的 UNet vs MLP 对比（图像版 DP、官方设置）：
 
 1. **StackCube / PegInsertionSide 的数据集还没转**，先跑教程 §4.1 的 `convert_all.py`：
    - StackCube：`--max-episode-steps 200`（官方 baselines.sh）
-   - PegInsertionSide：`pd_ee_delta_pose` + `--max-episode-steps 300`，动作 7 维（有旋转），数据集文件名后缀是 `.state.pd_ee_delta_pose.physx_cpu.h5` —— `dp_lib.find_dataset` 现在只认 `pd_ee_delta_pos`，转完**手动用 `--h5` 传路径**，或把 `H5_SUFFIX` 改成任务相关的。
+   - PegInsertionSide：`pd_ee_delta_pose` + `--max-episode-steps 300`，动作 7 维（有旋转），数据集文件名后缀是 `.state.pd_ee_delta_pose.physx_cpu.h5` —— `dp.dp_lib.find_dataset` 现在只认 `pd_ee_delta_pos`，转完**手动用 `--h5` 传路径**，或把 `H5_SUFFIX` 改成任务相关的。
 2. 转换出来的演示成功率可能不到 100%，先跑 `check_datasets.py` 看条数和质量再训。
 
 ### A.5 代码接入要点（已落地，供理解改动）
 
-三种主干统一接口：`forward(x, t_emb, c) → ε̂`，其中 `x:(B,Tp,A)`、`t_emb:(B,128)`（已过 SinusoidalPosEmb）、`c:(B,cond_dim)`。
-`DiffusionPolicy.eps()` 收敛为一行统一调用：
+三种主干**不再共用同一个 forward 签名**——因为官方 UNet / Transformer 都要求"传入原始 timestep、主干内部自己做时间嵌入"：
+
+- MLP：`forward(x, t_emb, c)`，`t_emb:(B,128)` 由外部 `SinusoidalPosEmb` 算好
+- UNet（官方）：`forward(sample, timestep, global_cond=...)`，`global_cond:(B, obs_dim*To)`（展平）
+- Transformer（官方 DP-T）：`forward(sample, timestep, cond=...)`，`cond:(B, To, obs_dim)`（逐步）
+
+`DiffusionPolicy.cond()` 负责按主干准备条件，`eps()` 负责分发签名（`dp/dp_lib.py`）：
 
 ```python
 def eps(self, x, t, c):
-    return self.noise_pred(x, self.t_emb(t), c)
+    if self.backbone == "unet":
+        return self.noise_pred(x, t, global_cond=c)   # 官方签名
+    if self.backbone == "transformer":
+        return self.noise_pred(x, t, cond=c)          # 官方签名
+    return self.noise_pred(x, self.t_emb(t), c)       # MLP
 ```
 
-工厂函数 `train_local/backbones.py::build_noise_pred(backbone, Tp, act_dim, cond_dim, ...)` 按名字返回对应主干；
-`compute_loss` / `sample` / `cond` **一行都不用动**。完整的三种主干实现请看源码，不再在本教程内重复贴出：
+`compute_loss` / `sample` **一行都不用动**。完整的三种主干实现请看源码，不再在本教程内重复贴出：
 
-- `train_local/backbones.py` — `MLPNoisePred` / `ConditionalUNet1D` / `DiffusionTransformer` + `build_noise_pred`
-- `train_local/dp_lib.py` — `DiffusionPolicy(backbone=...)` 与统一 `eps()`
-- `train_local/train.py` — `--backbone` 参数、写入 ckpt、实验名含主干
+- `dp/backbones.py` — `MLPNoisePred` / `ConditionalUnet1D`（官方移植）/ `TransformerForDiffusion`（官方移植）+ `build_noise_pred`
+- `dp/dp_lib.py` — `DiffusionPolicy(backbone=...)`、`cond()` / `eps()` 分发、A1 条件路径
+- `dp/utils.py` — `EMA` / `plot_curve`（两套 train.py 共用）
+- `train_local/train.py`、`train/train.py` — `--backbone` 与主干超参、写入 ckpt、实验名含主干
 
 ### A.6 操作流程（按顺序执行）
 
 ```bash
-cd train_local
+# 在仓库根目录（pythonProject1/）执行
 
 # ---- Step 0 冒烟：确认三种主干都能训、loss 都在降（每个几十秒）----
-python train.py --env-id PickCube-v1 --backbone unet        --epochs 2
-python train.py --env-id PickCube-v1 --backbone transformer --epochs 2
+python train_local/train.py --env-id PickCube-v1 --backbone unet        --epochs 2
+python train_local/train.py --env-id PickCube-v1 --backbone transformer --epochs 2
 #   顺带记下打印里的 iters/s，用它修正 A.3.2 的时间估算
 
 # ---- Step 1 主实验：PickCube（易任务锚点；MLP 那组你已经有了）----
-python train.py --env-id PickCube-v1 --backbone unet
-python train.py --env-id PickCube-v1 --backbone transformer
-python eval.py --ckpt runs\PickCube-v1_frac1.0_unet_seed0\best.pt         -n 50 --seed0 2000
-python eval.py --ckpt runs\PickCube-v1_frac1.0_transformer_seed0\best.pt -n 50 --seed0 2000
+python train_local/train.py --env-id PickCube-v1 --backbone unet
+python train_local/train.py --env-id PickCube-v1 --backbone transformer
+python train_local/eval.py --ckpt train_local/runs/PickCube-v1_frac1.0_unet_seed0/best.pt         -n 50 --seed0 2000
+python train_local/eval.py --ckpt train_local/runs/PickCube-v1_frac1.0_transformer_seed0/best.pt -n 50 --seed0 2000
 
 # ---- Step 2 中间难度：StackCube（先转数据集，见 A.4）----
 python convert_all.py StackCube-v1
-python train.py --env-id StackCube-v1 --max-episode-steps 200                 # mlp
-python train.py --env-id StackCube-v1 --max-episode-steps 200 --backbone unet
-python train.py --env-id StackCube-v1 --max-episode-steps 200 --backbone transformer
+python train_local/train.py --env-id StackCube-v1 --max-episode-steps 200                 # mlp
+python train_local/train.py --env-id StackCube-v1 --max-episode-steps 200 --backbone unet
+python train_local/train.py --env-id StackCube-v1 --max-episode-steps 200 --backbone transformer
 #   三个都各自 eval -n 50 --seed0 2000
 
 # ---- Step 3 难任务：PegInsertionSide（7 维动作，分化点）----
 #   转数据集（pd_ee_delta_pose，max_episode_steps 300），训练时 --h5 手动传路径
 
 # ---- Step 4 汇总出表出图 ----
+python tools/summarize_runs.py --runs-dir train_local/runs --csv
 ```
 
-> 也可以直接写个 bat/sh 把 9 组「train + eval」串起来过夜跑；`run_local.py` 还没接 `--backbone`，介意的话把它的一键命令改成上面这种显式写法。
+> 也可以直接写个 bat/sh 把 9 组「train + eval」串起来过夜跑；
+> `tools/run_local.py` 现已支持 `--backbone`（会写成 `<env>_frac<f>_<backbone>_seed<s>/`，与 `train.py` 命名一致），
+> 想跑农场那套入口脚本时再加 `--train-dir train --device cuda`。
 
 ### A.7 报告呈现
 

@@ -1,21 +1,24 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-summarize_runs.py — 把 train_local/runs/ 下所有实验产物汇总成一份 Markdown 报告。
+summarize_runs.py — 把某个 runs/ 下的所有实验产物汇总成一份 Markdown 报告（机器无关）。
+
+本机与学院 GPU 的结果都能汇总：`--runs-dir` 指到哪套就扫哪套
+（`train_local/runs` 或 `train/runs`），也可以先把农场结果拷回来再一起扫。
 
 扫描内容（每个实验目录）：
   train_summary.json   训练配置 + 指标（epochs / total_iters / seconds / best_score / n_params ...）
   eval_*.json          评测成功率 + 每个 episode 明细（成功与否 / 步数）
 
-产出：
-  runs/SUMMARY_all.md  可直接贴进报告的汇总表（默认；`--out` 可改）
-  runs/SUMMARY_all.csv 同样的表（`--csv` 时额外导出，方便画图）
+产出（默认写在 `<runs-dir>/` 下）：
+  SUMMARY_all.md   可直接贴进报告的汇总表（`--out` 可改路径）
+  SUMMARY_all.csv  同样的表（`--csv` 时额外导出，方便画图）
 
 用法：
-  python summarize_runs.py                     # 扫描 runs/ -> runs/SUMMARY_all.md
-  python summarize_runs.py --env-id PickCube-v1
-  python summarize_runs.py --out runs/REPORT.md --csv
-  python summarize_runs.py --runs-dir runs --quiet
+  python tools/summarize_runs.py                              # 默认扫 train_local/runs
+  python tools/summarize_runs.py --env-id PickCube-v1
+  python tools/summarize_runs.py --runs-dir train/runs        # 扫学院 GPU 那套结果
+  python tools/summarize_runs.py --out runs/REPORT.md --csv
 
 目录名约定（两种都支持）：
   <env>_frac<f>_seed<s>            （旧版，主干按 mlp 处理）
@@ -34,6 +37,8 @@ import sys
 from datetime import datetime
 
 HERE = osp.dirname(osp.abspath(__file__))
+ROOT = osp.abspath(osp.join(HERE, ".."))
+DEFAULT_RUNS_DIR = osp.join(ROOT, "train_local", "runs")
 
 BACKBONE_ORDER = {"mlp": 0, "unet": 1, "transformer": 2}
 DIR_RE = re.compile(
@@ -370,7 +375,8 @@ def main():
         pass
 
     ap = argparse.ArgumentParser(description="汇总 runs/ 下的训练+评测产物为 Markdown 报告")
-    ap.add_argument("--runs-dir", default=osp.join(HERE, "runs"), help="实验根目录（默认 ./runs）")
+    ap.add_argument("--runs-dir", default=DEFAULT_RUNS_DIR,
+                    help="实验根目录（默认 <repo>/train_local/runs；农场结果用 `--runs-dir train/runs`）")
     ap.add_argument("--out", default=None, help="输出 .md 路径（默认 <runs-dir>/SUMMARY_all.md）")
     ap.add_argument("--env-id", default=None, help="只看某个任务，如 PickCube-v1")
     ap.add_argument("--csv", action="store_true", help="额外导出同名 .csv（总览表）")
